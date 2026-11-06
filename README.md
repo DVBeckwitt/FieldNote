@@ -9,11 +9,11 @@ A minimalist Android lab notebook for audio, photos, video, and text, organized 
 - **Keep related media together.** Attach photos, video, text, tags, and timestamped markers to an audio note. Search and filter your notes later.
 - **Shake to record.** Shake once to start audio and again to stop while Record is open. Choose dark navy or light blue; dark mode is the default.
 
-**Your project is one portable ZIP.** Choose its storage location, and Fieldnote updates it in the background. Original files keep their capture times; a JSON index preserves metadata and relationships. Copy the ZIP to keep the complete project—no hidden database required.
+**Your project is one portable ZIP.** Choose its storage location, and Fieldnote updates it in the background. Original files keep their capture times; a JSON index preserves metadata and relationships. Copy the ZIP to keep the complete project—no hidden database required. The folder button beside Settings opens its location in your file explorer.
 
 Works without an account, Google services, or root access. Android 8.0 or newer.
 
-**[Download the beta APK](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.19)**
+**[Download the beta APK](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.20)**
 
 <img src="docs/screenshot.png" alt="Fieldnote in dark mode, showing the large recording control and latest audio/photo note" width="320">
 

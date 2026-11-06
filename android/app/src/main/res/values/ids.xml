@@ -2,9 +2,11 @@
     <item type="id" name="record_button" />
     <item type="id" name="record_status" />
     <item type="id" name="record_title" />
-    <item type="id" name="tab_capture" />
-    <item type="id" name="tab_notebook" />
-    <item type="id" name="tab_files" />
+    <item type="id" name="files_button" />
+    <item type="id" name="files_dialog" />
+    <item type="id" name="open_project_folder" />
+    <item type="id" name="open_project_zip" />
+    <item type="id" name="share_project_zip" />
     <item type="id" name="take_photo" />
     <item type="id" name="take_video" />
     <item type="id" name="project_title" />

@@ -8,6 +8,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Instrumentation;
 import android.content.Context;
+import android.content.Intent;
 import android.content.ContentValues;
 import android.content.SharedPreferences;
 import android.graphics.BitmapFactory;
@@ -394,7 +395,68 @@ public final class NativeCaptureInstrumentedTest {
         assertFalse(RecordingService.isBusy());
     }
 
-    @Test public void swipingOutsideMicrophoneChangesPagesWithoutStartingCapture() throws Exception {
+    @Test public void headerFilesButtonOffersExternalFolderAndZipWithoutReplacingRecord() throws Exception {
+        notebook = ActivityScenario.launch(MainActivity.class);
+        awaitNotebookReady();
+        assertCapturePageOnly();
+        AtomicReference<Intent> launched = new AtomicReference<>();
+        Instrumentation.ActivityMonitor monitor = new Instrumentation.ActivityMonitor() {
+            @Override public Instrumentation.ActivityResult onStartActivity(Intent intent) {
+                launched.set(new Intent(intent));
+                return new Instrumentation.ActivityResult(Activity.RESULT_CANCELED, null);
+            }
+        };
+        instrumentation.addMonitor(monitor);
+        try {
+            openFilesDialog();
+            onFilesDialog(dialog -> {
+                assertTrue(dialog.findViewById(R.id.open_project_folder).isEnabled());
+                assertTrue(dialog.findViewById(R.id.open_project_zip).isEnabled());
+            });
+            saveScreenshot("project-file-choices.png");
+            onFilesDialog(dialog -> assertTrue(dialog.findViewById(R.id.open_project_folder).performClick()));
+            Intent folder = externalViewIntent(launched.get());
+            Uri tree = DocumentsContract.buildTreeDocumentUri(projectUri.getAuthority(), DocumentsContract.getTreeDocumentId(projectUri));
+            Uri directory = DocumentsContract.buildDocumentUriUsingTree(projectUri, DocumentsContract.getTreeDocumentId(projectUri));
+            assertEquals(Intent.ACTION_VIEW, folder.getAction());
+            assertEquals(DocumentsContract.Document.MIME_TYPE_DIR, folder.getType());
+            assertEquals("The chosen storage folder opens, not a new folder picker", directory, folder.getData());
+            assertEquals(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION,
+                    folder.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION));
+            assertNotNull(folder.getClipData());
+            assertEquals(tree, folder.getClipData().getItemAt(0).getUri());
+            awaitRecordWindowFocus(true);
+            assertCapturePageOnly();
+            launched.set(null);
+            openFilesDialog();
+            onFilesDialog(dialog -> assertTrue(dialog.findViewById(R.id.open_project_zip).performClick()));
+            Intent zip = externalViewIntent(launched.get());
+            assertEquals(Intent.ACTION_VIEW, zip.getAction());
+            assertEquals("application/zip", zip.getType());
+            assertEquals(projectUri, zip.getData());
+            assertEquals(Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    zip.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION));
+            assertNotNull(zip.getClipData());
+            assertEquals(projectUri, zip.getClipData().getItemAt(0).getUri());
+            awaitRecordWindowFocus(true);
+            assertCapturePageOnly();
+            assertEquals("File choices do not create another in-app page", Stage.RESUMED, notebookStage());
+            assertFalse(RecordingService.isBusy());
+            assertEquals(0, store.readProject(projectUri).getJSONArray("entries").length());
+        } finally { instrumentation.removeMonitor(monitor); }
+    }
+
+    private static Intent externalViewIntent(Intent launched) {
+        assertNotNull("The file choice dispatches an external application intent", launched);
+        if (!Intent.ACTION_CHOOSER.equals(launched.getAction())) return launched;
+        Intent target = launched.getParcelableExtra(Intent.EXTRA_INTENT);
+        assertNotNull(target);
+        return target;
+    }
+
+    @Test public void horizontalSwipesOutsideMicrophoneStayOnRecordWithoutStartingCapture() throws Exception {
         notebook = ActivityScenario.launch(MainActivity.class);
         awaitNotebookReady();
         assertCapturePageOnly();
@@ -405,17 +467,11 @@ public final class NativeCaptureInstrumentedTest {
         awaitNotebookReady();
         assertCapturePageOnly();
         swipePage(-1);
-        awaitPageText("Inspect index.json");
-        onNotebook(activity -> {
-            assertFalse(activity.findViewById(R.id.record_button).isShown());
-            assertTrue("One page swipe selects Files directly", activity.findViewById(R.id.tab_files).isSelected());
-            assertFalse(activity.findViewById(R.id.tab_capture).isSelected());
-            assertNull(activity.findViewById(R.id.tab_notebook));
-        });
+        assertCapturePageOnly();
         swipePage(1);
         awaitNotebookReady();
         assertCapturePageOnly();
-        assertFalse("Changing pages must not start microphone capture", RecordingService.isBusy());
+        assertFalse("Horizontal swipes cannot navigate to a hidden Files page or start capture", RecordingService.isBusy());
         assertEquals(0, store.readProject(projectUri).getJSONArray("entries").length());
     }
 
@@ -537,7 +593,7 @@ public final class NativeCaptureInstrumentedTest {
         assertCapturePageOnly();
     }
 
-    @Test public void tabTapDuringHeldNarrationCannotStealItsRelease() throws Exception {
+    @Test public void filesButtonTapDuringHeldNarrationCannotStealItsRelease() throws Exception {
         notebook = ActivityScenario.launch(MainActivity.class);
         awaitNotebookReady();
         onNotebook(activity -> {
@@ -550,17 +606,17 @@ public final class NativeCaptureInstrumentedTest {
                     button[1] - origin[1] + mic.getHeight() / 2f);
             recordTouch.send(MotionEvent.ACTION_DOWN, 0, 0);
         });
-        await("held narration starts before the second-finger tab tap", 15_000,
+        await("held narration starts before the second-finger Files tap", 15_000,
                 () -> recordingState(RecordingService.State.RECORDING) && RecordingService.snapshot().elapsedMs() >= 900);
         RecordingService.Snapshot started = RecordingService.snapshot();
         ownedEntryId = started.entryId;
-        onNotebook(activity -> recordTouch.tapSecondPointer(activity.findViewById(R.id.tab_files)));
+        onNotebook(activity -> recordTouch.tapSecondPointer(activity.findViewById(R.id.files_button)));
         // A separate main-thread turn lets the native Button dispatch its posted click.
         onNotebook(activity -> {
             assertTrue("A second finger cannot hide the microphone holding the active touch",
                     activity.findViewById(R.id.record_button).isShown());
             assertTrue(activity.findViewById(R.id.record_button).isEnabled());
-            assertTrue(activity.findViewById(R.id.tab_capture).isSelected());
+            assertNull("A second finger cannot open a dialog over the held microphone", readField(activity, "filesDialog"));
             assertHeldNarration(started);
             recordTouch.send(MotionEvent.ACTION_UP, 0, 0);
         });
@@ -1310,13 +1366,11 @@ public final class NativeCaptureInstrumentedTest {
         assertTrue(preferences.edit().putBoolean("shake_recording_enabled", true).commit());
         notebook = ActivityScenario.launch(MainActivity.class);
         awaitNotebookReady();
-        onNotebook(activity -> {
-            assertTrue(activity.findViewById(R.id.tab_files).performClick());
-            assertTrue(activity.findViewById(R.id.tab_files).isSelected());
-            invokeShakeCallback(activity);
-        });
+        openFilesDialog();
+        onNotebook(activity -> invokeShakeCallback(activity));
         assertNoRecordingFor(250);
-        onNotebook(activity -> assertTrue(activity.findViewById(R.id.tab_capture).performClick()));
+        onFilesDialog(dialog -> assertTrue(dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()));
+        awaitRecordWindowFocus(true);
         openAllNotesFromRecent();
         onNotebook(activity -> {
             invokeShakeCallback(activity);
@@ -1914,7 +1968,7 @@ public final class NativeCaptureInstrumentedTest {
         });
     }
 
-    @Test public void tagsAndAllWordSearchFilterOnlyAllNotesAndSurviveRecreation() throws Exception {
+    @Test public void tagsAndAllWordSearchSurviveFilesDialogAndRecreation() throws Exception {
         notebook = ActivityScenario.launch(MainActivity.class);
         awaitNotebookReady();
         quickRecordGesture(0, 120);
@@ -1972,18 +2026,20 @@ public final class NativeCaptureInstrumentedTest {
         onNotebook(activity -> assertTrue(activity.findViewById(R.id.close_notes).performClick()));
         awaitNotebookReady();
         awaitRecentTitle("Pump sounds");
-        onNotebook(activity -> assertTrue(activity.findViewById(R.id.tab_files).performClick()));
-        awaitPageText("Inspect index.json");
-        String audioPath = audio.getString("path");
-        onNotebook(activity -> {
-            assertTrue("Files is the selected page", activity.findViewById(R.id.tab_files).isSelected());
-            assertFalse(activity.findViewById(R.id.tab_capture).isSelected());
-            View files = activity.findViewById(R.id.entry_list);
-            assertTrue("Tag and marker filters never hide unmarked original entries in Files", containsText(files, "Alignment reference"));
-            assertTrue(containsText(files, "Vacuum reference"));
-            assertTrue(containsText(files, audioPath));
-            assertTrue(activity.findViewById(R.id.tab_capture).performClick());
+        openFilesDialog();
+        onFilesDialog(dialog -> {
+            assertTrue(dialog.findViewById(R.id.open_project_folder).isEnabled());
+            assertTrue(dialog.findViewById(R.id.open_project_zip).isEnabled());
+            assertTrue(dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
         });
+        onNotebook(activity -> {
+            assertEquals("Opening files must not clear the saved search query", "BLUE bench",
+                    ((EditText) activity.findViewById(R.id.notes_search)).getText().toString());
+            assertTrue(activity.findViewById(R.id.markers_filter).isSelected());
+            assertTrue(describedView(activity.getWindow().getDecorView(), "Filter tag bench").isSelected());
+        });
+        assertEquals("Opening files cannot remove notes hidden by the current filters", 3,
+                store.readProject(projectUri).getJSONArray("entries").length());
         awaitNotebookReady();
         swipeRecentCard(-80, MotionEvent.ACTION_UP);
         await("filtered notes reopen at their settled position", 10_000, () -> {
@@ -2442,47 +2498,73 @@ public final class NativeCaptureInstrumentedTest {
             assertEquals("The notes panel has finished closing", View.GONE,
                     activity.findViewById(R.id.notes_sheet).getVisibility());
             assertTrue(activity.findViewById(R.id.record_title).isShown());
-            assertTrue(activity.findViewById(R.id.tab_capture).isShown());
-            assertTrue(activity.findViewById(R.id.tab_capture).isSelected());
-            assertNull("The separate Notebook tab has been removed", activity.findViewById(R.id.tab_notebook));
-            assertTrue(activity.findViewById(R.id.tab_files).isShown());
-            assertFalse(activity.findViewById(R.id.tab_files).isSelected());
+            for (String name : new String[]{"tab_capture", "tab_notebook", "tab_files"}) {
+                int legacyId = activity.getResources().getIdentifier(name, "id", activity.getPackageName());
+                assertTrue("Retired navigation control is absent: " + name,
+                        legacyId == 0 || activity.findViewById(legacyId) == null);
+            }
+            View files = activity.findViewById(R.id.files_button);
+            View settings = activity.findViewById(R.id.settings_button);
+            assertTrue(files.isShown());
+            assertTrue(settings.isShown());
+            assertSame("Files belongs to the Settings header", settings.getParent(), files.getParent());
             assertTrue(activity.findViewById(R.id.recent_note_card).isShown());
-            int[] tabPosition = new int[2];
-            int[] micPosition = new int[2];
-            activity.findViewById(R.id.tab_capture).getLocationOnScreen(tabPosition);
+            int[] filesPosition = new int[2], settingsPosition = new int[2], micPosition = new int[2];
+            files.getLocationOnScreen(filesPosition);
+            settings.getLocationOnScreen(settingsPosition);
             record.getLocationOnScreen(micPosition);
-            assertTrue("Navigation tabs stay above the microphone", tabPosition[1] < micPosition[1]);
+            assertEquals("Header actions share a row", settingsPosition[1], filesPosition[1]);
+            assertTrue("The Files action sits beside Settings", filesPosition[0] + files.getWidth() <= settingsPosition[0]);
+            assertTrue("Header actions stay above the microphone", filesPosition[1] < micPosition[1]);
         });
     }
 
     private void swipePage(int direction) {
+        final float[] points = new float[4];
         onNotebook(activity -> {
             View pages = activity.findViewById(R.id.capture_pages);
             float density = activity.getResources().getDisplayMetrics().density;
-            float x = pages.getWidth() * (direction < 0 ? .72f : .28f);
-            float y = 12 * density;
             int[] position = new int[2];
             pages.getLocationOnScreen(position);
+            points[0] = position[0] + pages.getWidth() * (direction < 0 ? .72f : .28f);
+            points[1] = position[1] + 12 * density;
+            points[2] = points[0] + direction * 120 * density;
+            points[3] = points[0] + direction * 140 * density;
             Rect micBounds = new Rect();
             View mic = activity.findViewById(R.id.record_button);
             if (mic.isShown() && mic.getGlobalVisibleRect(micBounds))
-                assertFalse("Page swipe begins outside the microphone", micBounds.contains(Math.round(position[0] + x), Math.round(position[1] + y)));
-            TouchPath swipe = new TouchPath(pages, x, y);
-            swipe.send(MotionEvent.ACTION_DOWN, 0, 0);
-            swipe.send(MotionEvent.ACTION_MOVE, direction * 120, 0);
-            swipe.send(MotionEvent.ACTION_UP, direction * 140, 0);
+                assertFalse("Horizontal swipe begins outside the microphone", micBounds.contains(Math.round(points[0]), Math.round(points[1])));
+        });
+        long down = SystemClock.uptimeMillis();
+        int[] actions = {MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP};
+        float[] xs = {points[0], points[2], points[3]};
+        for (int i = 0; i < actions.length; i++) {
+            MotionEvent event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), actions[i], xs[i], points[1], 0);
+            event.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+            try { assertTrue("The device accepts the horizontal input", instrumentation.getUiAutomation().injectInputEvent(event, true)); }
+            finally { event.recycle(); }
+            SystemClock.sleep(25);
+        }
+    }
+
+    private void openFilesDialog() throws Exception {
+        onNotebook(activity -> assertTrue(activity.findViewById(R.id.files_button).performClick()));
+        await("header Files action opens the project-file choices", 5_000, () -> {
+            AtomicBoolean shown = new AtomicBoolean();
+            onNotebook(activity -> {
+                AlertDialog dialog = (AlertDialog) readField(activity, "filesDialog");
+                shown.set(dialog != null && dialog.isShowing() && dialog.findViewById(R.id.files_dialog) != null);
+            });
+            return shown.get();
         });
     }
 
-    private void awaitPageText(String text) throws Exception {
-        await("swipe renders page containing " + text, 5_000, () -> {
-            AtomicBoolean shown = new AtomicBoolean();
-            onNotebook(activity -> {
-                View entries = activity.findViewById(R.id.entry_list);
-                shown.set(entries != null && entries.isShown() && containsText(entries, text));
-            });
-            return shown.get();
+    private void onFilesDialog(Consumer<AlertDialog> action) {
+        onNotebook(activity -> {
+            AlertDialog dialog = (AlertDialog) readField(activity, "filesDialog");
+            assertNotNull("MainActivity owns the file choices", dialog);
+            assertTrue(dialog.isShowing());
+            action.accept(dialog);
         });
     }
 
@@ -2671,8 +2753,7 @@ public final class NativeCaptureInstrumentedTest {
                         && sheet != null && sheet.getVisibility() == View.VISIBLE && sheet.getHeight() > 0
                         && Math.abs(sheet.getTranslationY()) < 1
                         && !activity.findViewById(R.id.record_button).isShown()
-                        && activity.findViewById(R.id.tab_capture).isSelected()
-                        && !activity.findViewById(R.id.tab_files).isSelected()
+                        && activity.findViewById(R.id.files_button).isShown()
                         && containsText(activity.getWindow().getDecorView(), "All notes")
                         && !((Boolean) readField(activity, "projectOperation"))
                         && !((Boolean) readField(activity, "projectLoading")));
@@ -3238,7 +3319,7 @@ public final class NativeCaptureInstrumentedTest {
     }
 
     private void saveScreenshot(String name) throws IOException {
-        name = "beta19-final-" + name;
+        name = "beta20-final-" + name;
         awaitScreenshotMainTurn();
         // Held feedback intentionally keeps drawing. A fully idle UI is neither required
         // nor a bounded condition here. Behavior is established by each test's assertions;

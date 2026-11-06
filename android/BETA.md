@@ -1,23 +1,23 @@
-# Fieldnote 0.2.0-beta.19
+# Fieldnote 0.2.0-beta.20
 
-Android beta (version code 20) for Android 8.0 and later.
+Android beta (version code 21) for Android 8.0 and later.
 No Google services are needed; no network permission is requested.
 Root access is neither needed nor used.
 
 ## Install
 
-Download the APK from the [beta 19 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.19).
+Download the APK from the [beta 20 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.20).
 Transfer it to the phone and open it from Files. If prompted, allow that
 installer source to install apps, then complete installation. This personal beta
 uses the local signing certificate; updates over earlier betas must use the same
 certificate. Keep the existing app installed to preserve its permissions,
 settings, and any pending captures.
 
-Beta 19 launches the floating microphone directly from its home-screen widget,
-without opening Fieldnote after setup. Hold and swipe on the control over your
-launcher to capture into the latest-created project. Existing widgets are
-refreshed when the app is updated. Shake start/stop in Record, touch gestures,
-and background ZIP saving remain available.
+Beta 20 replaces the Files tab with a folder button beside Settings. It offers
+to open the project's storage folder in your file explorer, open its ZIP, or
+share the ZIP. Record is now the single main screen, with the notes list still
+available by swiping up from the recent note. Home-screen widget capture, shake
+start/stop, and background ZIP saving remain available.
 The [validation summary](../docs/VALIDATION.md) records the checks and their limits.
 See [Building Fieldnote](BUILDING.md) to build or test from source.
 
@@ -52,9 +52,7 @@ See [Building Fieldnote](BUILDING.md) to build or test from source.
    same entry; **Skip** stops and saves audio without adding text. The typing
    interval is included in captured audio duration. Fast left/right/down gestures
    before the hold threshold create standalone photo/video/text notes instead.
-7. Swipe horizontally away from the microphone to switch between Record and Files.
-   Tab changes are ignored during a microphone hold, preserving its release behavior.
-   Drag upward on the recent-note card to reveal all notes within the main screen.
+7. Drag upward on the recent-note card to reveal all notes within the main screen.
    The panel follows your finger and settles open or closed on release. Drag down
    from the top of the all-notes list to close it; short, reversed, or cancelled
    drags return to the state where you started. When the list is scrolled down,
@@ -177,7 +175,7 @@ every word you enter must appear somewhere in the entry. Use the horizontal tag
 chips for an exact tag match, **Markers only** for entries with audio bookmarks,
 or both alongside search. **Clear filters** resets them. Filters survive closing
 the panel and Android activity recreation, but are not retained across a full
-app relaunch. The recent-note card and Files are never filtered.
+app relaunch. The recent-note card is never filtered.
 
 The text editor includes **Tags, separated by commas** for new and existing
 notes. Tags become lowercase, leading `#` characters are removed, and duplicates
@@ -211,10 +209,15 @@ All notes, attachments, name/text edits, tags, and finalized audio markers updat
 this existing ZIP. Text and entry names live in `index.json`; media originals
 remain separate archive members.
 When the ZIP is up to date, copying it preserves all files and relationships; use
-**Open project ZIP** and the document picker to reopen it. Files lists only the
-canonical archive's contents. **Share project ZIP** is blocked during active
-capture or pending saves; tap it again after they finish to share the completed
-project. A hidden app database is not needed for a
+**Open project ZIP** in Settings and the document picker to reopen it in Fieldnote.
+The folder button beside Settings offers **Open storage folder**, **Open project ZIP**
+in an external app, and **Share project ZIP**. The storage-folder action opens the
+folder originally granted to Fieldnote; for a nested import this can be an ancestor
+folder. A ZIP imported without folder access can still be opened directly, but its
+parent folder cannot be inferred. The external app receives temporary read access.
+If no compatible app is installed, Fieldnote explains that instead of opening a
+folder picker. Opening or sharing the ZIP is blocked during active capture or pending
+saves; try again after they finish. A hidden app database is not needed for a
 completed project; the app's cached verified index is derived from the archive.
 
 In the portable index, `entries[].tags` is an array of normalized strings, and

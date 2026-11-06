@@ -79,23 +79,22 @@ public class MainActivity extends Activity {
     private Uri stagedProject;
     private volatile long pendingRefreshGeneration;
     private long observedPublicationGeneration = -1;
-    private boolean dark, destroyed, filesView, newestFirst = true, receiverRegistered, visible, resumed, projectOperation, projectLoading;
+    private boolean dark, destroyed, newestFirst = true, receiverRegistered, visible, resumed, projectOperation, projectLoading;
     private int background, panel, ink, muted, accent, buttonInk, border, recordingColor, preferredMicSize;
     private LinearLayout root, entryList, capturePanel, capturePage, listPage, recentCard;
-    private TextView projectTitle, projectPath, recordStatus, recordTitle, recordHelp, attachNotice, countLabel;
+    private TextView projectTitle, recordStatus, recordTitle, recordHelp, attachNotice, countLabel;
     private TextView recentTitle, recentPreview;
-    private Button captureTab, filesTab, closeNotesButton, markerButton, markersFilter;
+    private Button closeNotesButton, markerButton, markersFilter;
     private EditText notesSearch;
     private LinearLayout searchControls, tagFilters;
     private String searchQuery = "", selectedTag = "", observedMarkerKey, observedMarkerError;
     private boolean markersOnly;
     private int observedMarkerCount;
     private NotesScrollView notesScroll;
-    private SwipeTabsLayout pages;
+    private FrameLayout pages;
     private FrameLayout notesLayer;
     private ValueAnimator notesAnimator;
     private boolean notesDragging, notesOpening;
-    private int activeTab;
     private boolean notesExpanded;
     private boolean renderEntriesAfterHold;
     private MotionCaptureControls motionControls;
@@ -104,6 +103,7 @@ public class MainActivity extends Activity {
     private EntryViewer entryViewer;
     private AlertDialog noteDialog;
     private AlertDialog settingsDialog;
+    private AlertDialog filesDialog;
     private InlineCamera inlineCamera;
     private FrameLayout inlineCameraContainer;
     private Uri pendingTextProject, pendingCameraProject;
@@ -169,10 +169,10 @@ public class MainActivity extends Activity {
             nextEntryId = savedInstanceState.getString("nextEntryId");
             pendingCameraMode = savedInstanceState.getString("pendingCameraMode");
             pendingCameraEntry = savedInstanceState.getString("pendingCameraEntry");
-            // Translate an older three-tab activity snapshot without changing project data.
+            // Restore old Notebook snapshots as the notes sheet; obsolete Files snapshots return to Record.
             int oldTab = savedInstanceState.getInt("activeTab", 0);
-            activeTab = savedInstanceState.getInt("pageTab", oldTab == 2 ? 1 : 0);
-            notesExpanded = savedInstanceState.getBoolean("notesExpanded",
+            boolean oldFiles = savedInstanceState.getInt("pageTab", oldTab == 2 ? 1 : 0) == 1;
+            notesExpanded = !oldFiles && savedInstanceState.getBoolean("notesExpanded",
                     !savedInstanceState.containsKey("pageTab") && oldTab == 1);
             searchQuery = savedInstanceState.getString("searchQuery", "");
             selectedTag = savedInstanceState.getString("selectedTag", "");
@@ -235,13 +235,14 @@ public class MainActivity extends Activity {
             return;
         }
         if (settingsDialog != null) settingsDialog.dismiss();
+        if (filesDialog != null) filesDialog.dismiss();
         if (entryViewer != null) entryViewer.dismiss();
         quickMode = mode;
         // An existing capture keeps its identity and project, regardless of newer projects.
         quickProject = RecordingService.isRecording() ? capture.projectUri : null;
         quickExistingEntry = RecordingService.isRecording() ? capture.entryId : null;
         quickReady = false;
-        selectTab(0);
+        showRecord();
         resolveQuickProject();
     }
 
@@ -398,6 +399,17 @@ public class MainActivity extends Activity {
         brand.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         brand.setGravity(Gravity.CENTER_VERTICAL);
         top.addView(brand, new LinearLayout.LayoutParams(0, dp(48), 1));
+        ImageButton files = new ImageButton(this);
+        files.setId(R.id.files_button);
+        files.setImageResource(R.drawable.ic_folder);
+        files.setImageTintList(ColorStateList.valueOf(accent));
+        files.setPadding(dp(13), dp(13), dp(13), dp(13));
+        files.setBackground(touchSurface(panel, 16, border));
+        files.setContentDescription("Project files");
+        files.setOnClickListener(v -> projectFiles());
+        LinearLayout.LayoutParams filesSpace = new LinearLayout.LayoutParams(dp(48), dp(48));
+        filesSpace.setMarginEnd(dp(8));
+        top.addView(files, filesSpace);
         ImageButton settings = new ImageButton(this);
         settings.setId(R.id.settings_button);
         settings.setImageResource(R.drawable.ic_settings);
@@ -420,11 +432,6 @@ public class MainActivity extends Activity {
         projectTitle.setContentDescription("Choose project");
         projectTitle.setOnClickListener(v -> projects());
         margin(projectTitle, 12, 10);
-        projectPath = text("", 11, muted);
-        projectPath.setMaxLines(1);
-        projectPath.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
-        projectPath.setOnClickListener(v -> storageInfo());
-        margin(projectPath, 0, 6);
         attachNotice = text("", 12, accent);
         attachNotice.setPadding(dp(10), dp(8), dp(10), dp(8));
         attachNotice.setBackground(shape(panel, 8, border));
@@ -432,21 +439,7 @@ public class MainActivity extends Activity {
         attachNotice.setOnClickListener(v -> { nextEntryId = null; updateAttachmentNotice(); });
         root.addView(attachNotice);
 
-        LinearLayout nav = row();
-        nav.setPadding(dp(4), dp(4), dp(4), dp(4));
-        nav.setBackground(shape(dark ? Color.parseColor("#101F34") : Color.parseColor("#EAF1FA"), 18, border));
-        captureTab = smallButton("Record");
-        captureTab.setId(R.id.tab_capture);
-        filesTab = smallButton("Files");
-        filesTab.setId(R.id.tab_files);
-        captureTab.setOnClickListener(v -> selectTab(0));
-        filesTab.setOnClickListener(v -> selectTab(1));
-        for (Button tab : new Button[]{captureTab, filesTab}) {
-            tab.setTextSize(13);
-            nav.addView(tab, new LinearLayout.LayoutParams(0, dp(44), 1));
-        }
-        margin(nav, 0, 8);
-        pages = new SwipeTabsLayout(this, dp(72), direction -> selectTab(activeTab + direction));
+        pages = new FrameLayout(this);
         pages.setId(R.id.capture_pages);
         pages.setClipChildren(false);
         root.addView(pages, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -505,12 +498,10 @@ public class MainActivity extends Activity {
             if (!RecordingService.addMarker(this)) toast("Start recording to mark a moment.");
         });
         capturePanel.addView(markerButton, new LinearLayout.LayoutParams(dp(240), dp(48)));
-        pages.exclude(markerButton);
         gesture = new RecordingGesture(dp(RecordingGesture.ACTIVATION_DISTANCE_DP), dp(RecordingGesture.HOME_RADIUS_DP));
         gestureGuide = new GestureGuideView(this, dp(RecordingGesture.ACTIVATION_DISTANCE_DP), dp(RecordingGesture.HOME_RADIUS_DP));
         gestureGuide.configureColors(accent, background, ink);
         recordSurface.addView(gestureGuide, new FrameLayout.LayoutParams(-1, -1));
-        pages.exclude(recordButton);
         recordButton.setOnTouchListener((view, event) -> recordTouch(view, event));
         recordButton.setOnClickListener(v -> {
             if (touchClick) return;
@@ -525,7 +516,6 @@ public class MainActivity extends Activity {
         FrameLayout.LayoutParams inlineLayout = new FrameLayout.LayoutParams(dp(160), dp(160), Gravity.TOP | Gravity.END);
         inlineLayout.topMargin = dp(6);
         recordSurface.addView(inlineCameraContainer, inlineLayout);
-        pages.exclude(inlineCameraContainer);
         inlineCamera = new InlineCamera(this, inlineCameraContainer, new InlineCamera.Listener() {
             @Override public void onStateChanged(boolean busy, boolean recording) { updateRecording(); }
             @Override public void onSaved() { refreshPendingEntries(); }
@@ -564,7 +554,6 @@ public class MainActivity extends Activity {
         TextView browseHint = text("Swipe up for all notes  ↑", 11, accent);
         browseHint.setPadding(0, dp(7), 0, 0);
         recentCard.addView(browseHint);
-        pages.exclude(recentCard);
         LinearLayout.LayoutParams recentLayout = new LinearLayout.LayoutParams(-1, -2);
         recentLayout.setMargins(0, dp(8), 0, dp(8));
         capturePage.addView(recentCard, recentLayout);
@@ -626,7 +615,6 @@ public class MainActivity extends Activity {
         filters.addView(tagFilters);
         searchControls.addView(filters, new LinearLayout.LayoutParams(-1, dp(48)));
         listPage.addView(searchControls);
-        pages.exclude(searchControls);
         notesScroll = new NotesScrollView(this, this::closeNotes);
         notesScroll.setDragListener(notesDragListener(false));
         notesScroll.setId(R.id.notes_scroll);
@@ -639,12 +627,7 @@ public class MainActivity extends Activity {
         renderPage();
     }
 
-    private void selectTab(int tab) {
-        tab = Math.max(0, Math.min(1, tab));
-        // A second pointer must not hide/disable the view that owns the mic release.
-        if (touching && tab != activeTab) return;
-        if (tab != 0 && cameraWorkPending()) { toast("Finish the camera capture first."); return; }
-        activeTab = tab;
+    private void showRecord() {
         notesExpanded = false;
         hideSearchKeyboard();
         renderPage();
@@ -653,15 +636,12 @@ public class MainActivity extends Activity {
     private void showAllNotes() {
         if (touching) return; // A held mic must retain its release event, including with a second finger.
         if (cameraWorkPending()) { toast("Finish the camera capture first."); return; }
-        if (activeTab != 0) return;
         if (notesExpanded && !notesDragging && notesAnimator == null) return;
-        activeTab = 0;
         recentCard.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
         settleNotes(true);
     }
 
     private void closeNotes() {
-        if (activeTab != 0) return;
         hideSearchKeyboard();
         settleNotes(false);
     }
@@ -669,7 +649,7 @@ public class MainActivity extends Activity {
     private NotesDragListener notesDragListener(boolean opening) {
         return new NotesDragListener() {
             @Override public boolean onDragStart() {
-                if (destroyed || touching || activeTab != 0 || notesDragging || notesAnimator != null
+                if (destroyed || touching || notesDragging || notesAnimator != null
                         || opening == notesExpanded || pages.getHeight() <= 0) return false;
                 if (cameraWorkPending()) { toast("Finish the camera capture first."); return false; }
                 if (!opening) hideSearchKeyboard();
@@ -745,24 +725,15 @@ public class MainActivity extends Activity {
 
     private void renderPage() {
         cancelNotesMotion();
-        filesView = activeTab == 1;
-        boolean showList = filesView || notesExpanded;
+        boolean showList = notesExpanded;
         capturePage.setVisibility(showList ? View.GONE : View.VISIBLE);
         notesLayer.setVisibility(showList ? View.VISIBLE : View.GONE);
         listPage.setVisibility(showList ? View.VISIBLE : View.GONE);
         listPage.setTranslationY(0);
         recordButton.setEnabled(!showList);
         recentCard.setEnabled(!showList);
-        closeNotesButton.setVisibility(notesExpanded && !filesView ? View.VISIBLE : View.GONE);
-        notesScroll.setDismissEnabled(notesExpanded && !filesView);
-        projectPath.setVisibility(filesView ? View.VISIBLE : View.GONE);
-        searchControls.setVisibility(filesView ? View.GONE : View.VISIBLE);
-        captureTab.setSelected(!filesView);
-        filesTab.setSelected(filesView);
-        captureTab.setBackground(touchSurface(!filesView ? panel : Color.TRANSPARENT, 14, !filesView ? border : Color.TRANSPARENT));
-        filesTab.setBackground(touchSurface(filesView ? panel : Color.TRANSPARENT, 14, filesView ? border : Color.TRANSPARENT));
-        captureTab.setTextColor(!filesView ? accent : muted);
-        filesTab.setTextColor(filesView ? accent : muted);
+        closeNotesButton.setVisibility(notesExpanded ? View.VISIBLE : View.GONE);
+        notesScroll.setDismissEnabled(notesExpanded);
         updateNotesBackHandler();
         renderEntries();
         updateMotionControls();
@@ -1178,12 +1149,13 @@ public class MainActivity extends Activity {
 
     private boolean motionReady() {
         return shakeEnabled() && visible && resumed && !destroyed && hasWindowFocus()
-                && activeTab == 0 && !notesExpanded && !notesDragging && notesAnimator == null
+                && !notesExpanded && !notesDragging && notesAnimator == null
                 && project != null && !projectOperation && !permissionRequest && quickMode == QUICK_NONE
                 && !FloatingRecorderService.isShowing()
                 && (noteDialog == null || !noteDialog.isShowing())
                 && (entryViewer == null || !entryViewer.isShowing())
-                && (settingsDialog == null || !settingsDialog.isShowing());
+                && (settingsDialog == null || !settingsDialog.isShowing())
+                && (filesDialog == null || !filesDialog.isShowing());
     }
 
     private void updateMotionControls() {
@@ -1242,7 +1214,7 @@ public class MainActivity extends Activity {
         resumeCameraPermission = false;
         pendingCameraProject = null;
         pendingCameraHeld = false;
-        selectTab(0);
+        showRecord();
         if ("photo".equals(mode)) inlineCamera.takePhoto(projectUri, entryId);
         else inlineCamera.startVideo(projectUri, entryId);
     }
@@ -1386,41 +1358,14 @@ public class MainActivity extends Activity {
         }
         entryList.removeAllViews();
         projectTitle.setText(project == null ? "Choose project  ⌄" : project.optString("name", "Project") + "  ⌄");
-        projectPath.setText(project == null ? "" : folderLabel(projectUri));
         List<JSONObject> list = entries();
         renderRecent(list);
         renderTagFilters(list);
-        countLabel.setText(filesView ? "Project files" : "All notes  ·  " + list.size());
+        countLabel.setText("All notes  ·  " + list.size());
         if (project == null) {
             empty("No project open", "");
             addAction(entryList, "Create a project", this::newProjectDialog);
             addAction(entryList, "Open project ZIP", () -> chooseFolder(PICK_IMPORT));
-            return;
-        }
-        if (filesView) {
-            list = entries(false);
-            TextView intro = text("Saved together in " + project.optString("name", "Project") + ".zip", 12, muted);
-            intro.setPadding(0, dp(4), 0, dp(15));
-            entryList.addView(intro);
-            addAction(entryList, "{ }  Inspect index.json", () -> jsonDialog("index.json", project));
-            for (JSONObject entry : list) {
-                if (!entry.optString("text").trim().isEmpty()) {
-                    addAction(entryList, "Text · " + NoteEntries.entryLabel(entry), () -> showEntry(entry));
-                }
-                JSONArray media = entry.optJSONArray("media");
-                if (media == null) continue;
-                for (int i = 0; i < media.length(); i++) {
-                    JSONObject item = media.optJSONObject(i);
-                    if (item == null) continue;
-                    Button file = smallButton(item.optString("path", item.optString("filename")));
-                    file.setTextSize(11);
-                    file.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-                    file.setAllCaps(false);
-                    file.setOnClickListener(v -> showEntry(entry));
-                    addCard(entryList, file, 6);
-                }
-            }
-            addAction(entryList, "Share project ZIP", this::shareProject);
             return;
         }
         int total = list.size();
@@ -1548,7 +1493,7 @@ public class MainActivity extends Activity {
             if ("audio".equals(kind)) {
                 nextEntryId = entryId;
                 updateAttachmentNotice();
-                selectTab(0);
+                showRecord();
                 recordButton.requestFocus();
             } else if ("text".equals(kind)) textNote(entryId);
             else camera(kind, entryId);
@@ -1830,7 +1775,7 @@ public class MainActivity extends Activity {
                 JSONObject loaded = store.readProject(created);
                 store.setCurrentProject(created);
                 if (store.defaultFolder() == null) store.setDefaultFolder(parent);
-                main.post(() -> { if (!destroyed) { projectLoading = false; projectOperation = false; projectUri = created; project = loaded; nextEntryId = null; updateAttachmentNotice(); selectTab(0); toast("Project ready."); } });
+                main.post(() -> { if (!destroyed) { projectLoading = false; projectOperation = false; projectUri = created; project = loaded; nextEntryId = null; updateAttachmentNotice(); showRecord(); toast("Project ready."); } });
             } catch (Exception error) { main.post(() -> { if (!destroyed) { projectOperation = false; message("Could not create project", errorMessage(error)); } }); }
         });
     }
@@ -1931,6 +1876,81 @@ public class MainActivity extends Activity {
         });
     }
 
+    private void projectFiles() {
+        // A second finger must not steal the held microphone's release event.
+        if (touching) return;
+        if (cameraWorkPending()) { toast("Finish the camera capture first."); return; }
+        if (projectOperation || projectLoading || permissionRequest || quickMode != QUICK_NONE) {
+            toast("Wait for the project to finish opening.");
+            return;
+        }
+        if (projectUri == null || project == null) { toast("Choose a project first."); return; }
+        if (filesDialog != null && filesDialog.isShowing()) return;
+        final Uri destination = projectUri;
+        final Intent folderIntent, zipIntent;
+        try {
+            folderIntent = ProjectFiles.folderIntent(destination);
+            zipIntent = ProjectFiles.zipIntent(destination);
+        } catch (IllegalArgumentException unavailable) {
+            toast("Open a project ZIP before opening its files.");
+            return;
+        }
+        stopPlayers();
+        hideSearchKeyboard();
+        LinearLayout content = dialogColumn();
+        content.setId(R.id.files_dialog);
+        TextView location = text(folderLabel(destination), 13, muted);
+        location.setPadding(0, dp(4), 0, dp(8));
+        content.addView(location);
+        if (folderIntent == null) {
+            content.addView(text("The folder location is unavailable for this imported ZIP. You can open the ZIP itself.", 13, muted));
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Project files")
+                .setView(scroll(content)).setNegativeButton("Cancel", null).create();
+        if (folderIntent != null) {
+            addAction(content, "Open storage folder", () -> openProjectFiles(dialog, destination, folderIntent, false))
+                    .setId(R.id.open_project_folder);
+        }
+        addAction(content, "Open project ZIP", () -> openProjectFiles(dialog, destination, zipIntent, true))
+                .setId(R.id.open_project_zip);
+        addAction(content, "Share project ZIP", () -> {
+            if (filesDialog != dialog || !destination.equals(projectUri)) return;
+            dialog.dismiss();
+            shareProject();
+        }).setId(R.id.share_project_zip);
+        filesDialog = dialog;
+        dialog.setOnDismissListener(ignored -> {
+            if (filesDialog == dialog) filesDialog = null;
+            updateMotionControls();
+        });
+        dialog.show();
+        updateMotionControls();
+    }
+
+    private void openProjectFiles(AlertDialog dialog, Uri destination, Intent intent, boolean openingZip) {
+        if (destroyed || filesDialog != dialog || !destination.equals(projectUri)) return;
+        if (touching || cameraWorkPending() || projectOperation || projectLoading || permissionRequest
+                || quickMode != QUICK_NONE) { toast("Finish the current operation first."); return; }
+        if (openingZip) {
+            if (RecordingService.isBusy()) { toast("Finish recording before opening the project ZIP."); return; }
+            ProjectPublisher.Snapshot publication = ProjectPublisher.snapshot();
+            if (publication.running || publication.finalizedCount > 0) {
+                toast("Wait for the queued files to finish updating the ZIP before opening it.");
+                return;
+            }
+        }
+        dialog.dismiss();
+        try {
+            startActivity(intent);
+        } catch (ActivityNotFoundException unavailable) {
+            message("No file explorer available", openingZip
+                    ? "No installed app can open this ZIP. You can share it from Project files."
+                    : "No installed app can open this storage folder. Try Open project ZIP instead.");
+        } catch (SecurityException | IllegalArgumentException unavailable) {
+            message("Files unavailable", "The storage provider could not open this location. Open the project again from Settings to restore access.");
+        }
+    }
+
     private void settings() {
         if (settingsDialog != null && settingsDialog.isShowing()) return;
         LinearLayout content = dialogColumn();
@@ -2019,13 +2039,6 @@ public class MainActivity extends Activity {
         } catch (Exception error) { storageInfo(); }
     }
 
-    private void jsonDialog(String title, JSONObject data) {
-        TextView text = text("", 11, ink);
-        text.setTypeface(Typeface.MONOSPACE); text.setTextIsSelectable(true); text.setPadding(dp(20), dp(12), dp(20), dp(12));
-        try { text.setText(data == null ? "Unavailable" : data.toString(2)); } catch (JSONException error) { text.setText("Metadata could not be displayed."); }
-        new AlertDialog.Builder(this).setTitle(title).setView(scroll(text)).setNegativeButton("Close", null).show();
-    }
-
     @Override protected void onStart() {
         super.onStart();
         visible = true;
@@ -2100,6 +2113,7 @@ public class MainActivity extends Activity {
         destroyed = true;
         if (motionControls != null) motionControls.close();
         if (settingsDialog != null) settingsDialog.dismiss();
+        if (filesDialog != null) filesDialog.dismiss();
         cancelNotesMotion();
         if (Build.VERSION.SDK_INT >= 33 && notesBackCallback != null) {
             getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(notesBackCallback);
@@ -2123,7 +2137,6 @@ public class MainActivity extends Activity {
         out.putString("quickExistingEntry", quickExistingEntry);
         out.putString("pendingName", pendingName); out.putString("nextEntryId", nextEntryId);
         out.putString("pendingCameraMode", pendingCameraMode); out.putString("pendingCameraEntry", pendingCameraEntry);
-        out.putInt("pageTab", activeTab);
         out.putBoolean("notesExpanded", notesExpanded);
         out.putString("searchQuery", searchQuery);
         out.putString("selectedTag", selectedTag);
@@ -2181,7 +2194,7 @@ public class MainActivity extends Activity {
     private ScrollView scroll(View child) { ScrollView view = new ScrollView(this); view.addView(child); return view; }
     private void margin(View child, int top, int bottom) { LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(top), 0, dp(bottom)); root.addView(child, params); }
     private void addCard(LinearLayout parent, View child, int gap) { LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(gap)); parent.addView(child, params); }
-    private void addAction(LinearLayout parent, String title, Runnable action) { Button button = smallButton(title); button.setOnClickListener(v -> action.run()); LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(8), 0, 0); parent.addView(button, params); }
+    private Button addAction(LinearLayout parent, String title, Runnable action) { Button button = smallButton(title); button.setOnClickListener(v -> action.run()); LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(8), 0, 0); parent.addView(button, params); return button; }
     private void empty(String title, String detail) { TextView heading = text(title, 17, ink); heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD); heading.setPadding(dp(5), dp(17), dp(5), dp(10)); entryList.addView(heading); TextView body = text(detail, 13, muted); body.setPadding(dp(5), 0, dp(5), dp(15)); body.setLineSpacing(dp(3), 1f); entryList.addView(body); }
 
     /** Reserve text/control space before sizing the mic, including two-line recent previews. */
