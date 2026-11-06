@@ -1305,34 +1305,32 @@ public final class NativeCaptureInstrumentedTest {
         assertFalse(RecordingService.isBusy());
     }
 
-    /** Simulates recognized motion callbacks; this does not exercise physical sensors. */
-    @Test public void recognizedMotionCallbacksToggleLockedNarrationAndKeepTouchAndPhotosLinked() throws Exception {
-        assertTrue(preferences.edit().putBoolean("motion_controls", true).commit());
+    /** Recognized shake callbacks plus actual recording/touch/camera; not physical sensor validation. */
+    @Test public void recognizedShakeTogglesLockedNarrationAndKeepsTouchPhotosAndMarkersLinked() throws Exception {
+        assertTrue(preferences.edit().putBoolean("shake_recording_enabled", true).commit());
         notebook = ActivityScenario.launch(MainActivity.class);
         awaitNotebookReady();
         onNotebook(activity -> {
             assertTrue(activity.findViewById(R.id.tab_files).performClick());
             assertTrue(activity.findViewById(R.id.tab_files).isSelected());
-            invokeMotionCallback(activity, "motionForwardShake");
-            invokeMotionCallback(activity, "motionTwist");
+            invokeShakeCallback(activity);
         });
         assertNoRecordingFor(250);
         onNotebook(activity -> assertTrue(activity.findViewById(R.id.tab_capture).performClick()));
         openAllNotesFromRecent();
         onNotebook(activity -> {
-            invokeMotionCallback(activity, "motionForwardShake");
-            invokeMotionCallback(activity, "motionTwist");
+            invokeShakeCallback(activity);
         });
         assertNoRecordingFor(250);
         onNotebook(activity -> assertTrue(activity.findViewById(R.id.close_notes).performClick()));
         awaitNotebookReady();
-        await("Record has focus for recognized motion callbacks", 5_000, () -> {
+        await("Record has focus for recognized shake callbacks", 5_000, () -> {
             AtomicBoolean focused = new AtomicBoolean();
             onNotebook(activity -> focused.set(activity.hasWindowFocus()));
             return focused.get();
         });
-        onNotebook(activity -> invokeMotionCallback(activity, "motionForwardShake"));
-        await("recognized forward motion starts hands-free narration", 15_000,
+        onNotebook(activity -> invokeShakeCallback(activity));
+        await("recognized shake starts hands-free narration", 15_000,
                 () -> recordingState(RecordingService.State.RECORDING)
                         && RecordingService.snapshot().locked && RecordingService.snapshot().elapsedMs() >= 1000);
         RecordingService.Snapshot started = RecordingService.snapshot();
@@ -1342,7 +1340,7 @@ public final class NativeCaptureInstrumentedTest {
             recordTouch.send(MotionEvent.ACTION_MOVE, 90, -90);
             recordTouch.send(MotionEvent.ACTION_UP, 90, -90);
         });
-        await("a real northeast touch gesture still marks motion-started narration", 10_000,
+        await("a real northeast touch gesture still marks shake-started narration", 10_000,
                 () -> RecordingService.snapshot().markerCount == 1);
         RecordingService.Snapshot afterTouch = RecordingService.snapshot();
         long elapsedAfterTouch = afterTouch.elapsedMs();
@@ -1350,22 +1348,27 @@ public final class NativeCaptureInstrumentedTest {
         assertTrue(afterTouch.locked);
         assertEquals(started.entryId, afterTouch.entryId);
         assertEquals(started.startedElapsedRealtime, afterTouch.startedElapsedRealtime);
-        onNotebook(activity -> invokeMotionCallback(activity, "motionTwist"));
-        await("recognized twist captures one linked native JPEG", 20_000,
+        awaitMicrophoneAtHome();
+        onNotebook(activity -> {
+            beginRecordTouch(activity);
+            recordTouch.send(MotionEvent.ACTION_MOVE, -128, 0);
+            recordTouch.send(MotionEvent.ACTION_UP, -128, 0);
+        });
+        await("a left touch swipe captures one linked native JPEG", 20_000,
                 () -> findMedia(store.readProject(projectUri), "photo") != null && inlineCameraIdle());
-        RecordingService.Snapshot afterTwist = RecordingService.snapshot();
-        assertEquals(RecordingService.State.RECORDING, afterTwist.state);
-        assertTrue(afterTwist.locked);
-        assertEquals(started.entryId, afterTwist.entryId);
-        assertEquals(started.startedElapsedRealtime, afterTwist.startedElapsedRealtime);
-        assertTrue(afterTwist.elapsedMs() > elapsedAfterTouch);
-        saveScreenshot("recognized-motion-linked-photo.png");
-        onNotebook(activity -> invokeMotionCallback(activity, "motionForwardShake"));
-        await("a second recognized forward motion ends narration", 15_000,
+        RecordingService.Snapshot afterPhoto = RecordingService.snapshot();
+        assertEquals(RecordingService.State.RECORDING, afterPhoto.state);
+        assertTrue(afterPhoto.locked);
+        assertEquals(started.entryId, afterPhoto.entryId);
+        assertEquals(started.startedElapsedRealtime, afterPhoto.startedElapsedRealtime);
+        assertTrue(afterPhoto.elapsedMs() > elapsedAfterTouch);
+        saveScreenshot("shake-started-linked-photo.png");
+        onNotebook(activity -> invokeShakeCallback(activity));
+        await("a second recognized shake ends narration", 15_000,
                 () -> recordingState(RecordingService.State.IDLE));
         awaitPublishedMedia(1, 1, 0);
         JSONObject index = store.readProject(projectUri);
-        assertEquals("Motion and touch actions belong to one uninterrupted capture entry", 1, index.getJSONArray("entries").length());
+        assertEquals("Shake and touch actions belong to one uninterrupted capture entry", 1, index.getJSONArray("entries").length());
         JSONObject entry = readEntry(started.entryId);
         assertEquals(2, entry.getJSONArray("media").length());
         JSONObject audio = findMedia(index, "audio");
@@ -2116,230 +2119,96 @@ public final class NativeCaptureInstrumentedTest {
         assertEquals(Stage.RESUMED, notebookStage());
     }
 
-    @Test public void unreadableMotionSettingsOpenSafelyAndRequireExplicitRecovery() throws Exception {
-        assertTrue(preferences.edit().putString("motion_models_v1", "unreadable model")
-                .putString("motion_controls", "not a boolean").commit());
+    @Test public void shakeCallbacksAreIgnoredInSettingsBackgroundWithoutFocusAndWhenDisabled() throws Exception {
+        assertTrue(preferences.edit().putBoolean("shake_recording_enabled", true).commit());
         notebook = ActivityScenario.launch(MainActivity.class);
         awaitNotebookReady();
+        openShakeSettings();
+        onNotebook(activity -> invokeShakeCallback(activity));
+        assertNoRecordingFor(250);
+        onSettingsDialog(dialog -> assertTrue(dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()));
+        notebook.moveToState(androidx.lifecycle.Lifecycle.State.CREATED);
+        assertEquals(Stage.STOPPED, notebookStage());
+        onNotebook(activity -> invokeShakeCallback(activity));
+        assertNoRecordingFor(250);
+        notebook.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED);
+        awaitNotebookReady();
+        awaitRecordWindowFocus(true);
+        try {
+            onNotebook(activity -> activity.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE));
+            awaitRecordWindowFocus(false);
+            onNotebook(activity -> invokeShakeCallback(activity));
+            assertNoRecordingFor(250);
+        } finally {
+            onNotebook(activity -> activity.getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE));
+        }
+        awaitRecordWindowFocus(true);
         onNotebook(activity -> {
-            invokeMotionCallback(activity, "motionForwardShake");
-            assertFalse("Invalid saved motion settings cannot trigger a default recording", RecordingService.isBusy());
-            assertTrue(activity.findViewById(R.id.settings_button).performClick());
+            ((MotionCaptureControls) readField(activity, "motionControls")).setEnabled(false);
+            invokeShakeCallback(activity);
         });
-        onNotebook(activity -> {
-            AlertDialog dialog = (AlertDialog) readField(activity, "settingsDialog");
-            android.widget.Switch motion = dialog.findViewById(R.id.motion_controls_switch);
-            assertFalse(motion.isChecked());
-            assertTrue(containsText(dialog.getWindow().getDecorView(), "Saved motion profiles could not be read"));
-            motion.setChecked(true);
-            assertFalse("The switch cannot appear enabled before profiles are explicitly repaired", motion.isChecked());
-            assertEquals("unreadable model", preferences.getString("motion_models_v1", ""));
-            assertTrue(dialog.findViewById(R.id.motion_reset_audio).performClick());
-            motion.setChecked(true);
-            assertTrue(motion.isChecked());
-            assertTrue(preferences.getBoolean("motion_controls", false));
-            assertFalse(containsText(dialog.getWindow().getDecorView(), "Saved motion profiles could not be read"));
-            assertTrue(dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
-        });
-        assertCapturePageOnly();
-        assertFalse(RecordingService.isBusy());
+        assertNoRecordingFor(400);
+        assertEquals("Ineligible shakes create no captures or other media", 0,
+                store.readProject(projectUri).getJSONArray("entries").length());
     }
 
-    @Test public void motionSensitivityControlsPersistIndependentlyAcrossRecreation() throws Exception {
+    @Test public void shakeSettingIsSimpleAndPersistsWithoutReadingOldProfiles() throws Exception {
+        String oldProfiles = "unreadable old directional profiles";
+        assertTrue(preferences.edit().remove("shake_recording_enabled")
+                .putBoolean("motion_controls", true).putString("motion_models_v1", oldProfiles).commit());
         notebook = ActivityScenario.launch(MainActivity.class);
         awaitNotebookReady();
-        openMotionSettings();
-        saveScreenshot("motion-settings-overview.png");
-        int[] ids = {R.id.motion_audio_sensitivity, R.id.motion_photo_sensitivity, R.id.motion_marker_sensitivity};
-        int[] values = {25, 70, 90};
+        openShakeSettings();
         onSettingsDialog(dialog -> {
-            for (int i = 0; i < ids.length; i++) {
-                SeekBar slider = dialog.findViewById(ids[i]);
-                assertNotNull("Each motion action has its own sensitivity slider", slider);
-                Bundle arguments = new Bundle();
-                arguments.putFloat(AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, values[i]);
-                assertTrue("The native slider accepts an accessibility user adjustment",
-                        slider.performAccessibilityAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.getId(), arguments));
-                assertEquals(values[i], slider.getProgress());
-            }
-            SeekBar marker = dialog.findViewById(R.id.motion_marker_sensitivity);
-            Rect bounds = new Rect();
-            marker.getDrawingRect(bounds);
-            marker.requestRectangleOnScreen(bounds, true);
+            android.widget.Switch shake = dialog.findViewById(R.id.motion_controls_switch);
+            assertEquals("Shake to record", shake.getText().toString());
+            assertTrue("Obsolete custom profiles do not disable the simple shake toggle", shake.isChecked());
+            View settings = dialog.getWindow().getDecorView();
+            assertFalse(containsText(settings, "Teach motion"));
+            assertFalse(containsText(settings, "Sensitivity"));
+            assertFalse(containsText(settings, "Reset motion"));
+            assertFalse("Settings no longer contains motion sensitivity sliders", containsSeekBar(settings));
+            shake.setChecked(false);
+            assertFalse(preferences.getBoolean("shake_recording_enabled", true));
+            assertEquals(oldProfiles, preferences.getString("motion_models_v1", null));
         });
-        saveScreenshot("motion-settings-sensitivity.png");
+        saveScreenshot("shake-settings.png");
         onSettingsDialog(dialog -> assertTrue(dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()));
         notebook.recreate();
         awaitNotebookReady();
-        openMotionSettings();
+        openShakeSettings();
         onSettingsDialog(dialog -> {
-            for (int i = 0; i < ids.length; i++)
-                assertEquals("Recreation retains each independent sensitivity", values[i], ((SeekBar) dialog.findViewById(ids[i])).getProgress());
+            android.widget.Switch shake = dialog.findViewById(R.id.motion_controls_switch);
+            assertFalse("The simple switch survives recreation", shake.isChecked());
+            shake.setChecked(true);
+            assertTrue(preferences.getBoolean("shake_recording_enabled", false));
+            assertEquals(oldProfiles, preferences.getString("motion_models_v1", null));
             assertTrue(dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
         });
-        assertFalse("Adjusting recognition settings never starts microphone capture", RecordingService.isBusy());
+        assertFalse("Changing the switch does not itself start a recording", RecordingService.isBusy());
         assertEquals(0, store.readProject(projectUri).getJSONArray("entries").length());
     }
 
-    /** Native teaching UI with explicitly synthetic sequences, not physical sensor validation. */
-    @Test public void taughtMarkerMotionPersistsCancelKeepsItAndResetClearsOnlyThatAction() throws Exception {
-        assertTrue(preferences.edit().putBoolean("motion_controls", true).commit());
-        notebook = ActivityScenario.launch(MainActivity.class);
-        awaitNotebookReady();
-        onNotebook(activity -> {
-            MotionCaptureControls controls = (MotionCaptureControls) readField(activity, "motionControls");
-            for (MotionAction action : MotionAction.values()) controls.resetTraining(action);
-        });
-        openMotionSettings();
-        for (int teachId : new int[]{R.id.motion_teach_audio, R.id.motion_teach_photo, R.id.motion_teach_marker}) {
-            onSettingsDialog(dialog -> assertTrue(dialog.findViewById(teachId).performClick()));
-            awaitTrainingDialog();
-            onTrainingDialog(dialog -> assertTrue(dialog.findViewById(R.id.motion_training_start).performClick()));
-            await("each Teach control starts a bounded learning session", 5_000, this::motionTrainingActive);
-            onTrainingDialog(dialog -> assertTrue(dialog.findViewById(R.id.motion_training_cancel).performClick()));
-            await("Cancel stops learning without creating a motion model", 5_000, () -> !motionTrainingActive());
-            onNotebook(activity -> {
-                MotionCaptureControls controls = (MotionCaptureControls) readField(activity, "motionControls");
-                for (MotionAction action : MotionAction.values()) assertFalse(controls.isTrained(action));
-            });
-        }
-        onSettingsDialog(dialog -> assertTrue(dialog.findViewById(R.id.motion_teach_audio).performClick()));
-        awaitTrainingDialog();
-        onTrainingDialog(dialog -> assertTrue(dialog.findViewById(R.id.motion_training_start).performClick()));
-        await("audio learning starts independently", 5_000, this::motionTrainingActive);
-        for (float amplitude : new float[]{.9f, 1f, 1.1f}) {
-            MotionSequence demonstration = syntheticMotionDemonstration(MotionAction.AUDIO, amplitude);
-            onNotebook(activity -> ((MotionCaptureControls) readField(activity, "motionControls"))
-                    .submitTrainingDemonstration(demonstration));
-        }
-        await("three synthetic audio demonstrations save their own model", 5_000, () -> {
-            AtomicBoolean saved = new AtomicBoolean();
-            onNotebook(activity -> saved.set(((MotionCaptureControls) readField(activity, "motionControls")).isTrained(MotionAction.AUDIO)));
-            return saved.get();
-        });
-        onTrainingDialog(dialog -> assertTrue(dialog.findViewById(R.id.motion_training_cancel).performClick()));
-        onSettingsDialog(dialog -> assertTrue(dialog.findViewById(R.id.motion_teach_marker).performClick()));
-        awaitTrainingDialog();
-        onTrainingDialog(dialog -> assertTrue(dialog.findViewById(R.id.motion_training_start).performClick()));
-        await("marker learning starts", 5_000, this::motionTrainingActive);
-        for (float amplitude : new float[]{.9f, 1f, 1.1f}) {
-            MotionSequence demonstration = syntheticMotionDemonstration(MotionAction.MARKER, amplitude);
-            onNotebook(activity -> ((MotionCaptureControls) readField(activity, "motionControls"))
-                    .submitTrainingDemonstration(demonstration));
-        }
-        await("three accepted synthetic demonstrations save the marker model", 5_000, () -> {
-            AtomicBoolean saved = new AtomicBoolean();
-            onNotebook(activity -> saved.set(((MotionCaptureControls) readField(activity, "motionControls")).isTrained(MotionAction.MARKER)));
-            return saved.get();
-        });
-        onTrainingDialog(dialog -> {
-            assertTrue(((TextView) dialog.findViewById(R.id.motion_training_status)).getText().toString().contains("Saved"));
-            assertTrue(dialog.findViewById(R.id.motion_training_start).isEnabled());
-        });
-        saveScreenshot("motion-marker-training-saved.png");
-        onTrainingDialog(dialog -> assertTrue(dialog.findViewById(R.id.motion_training_cancel).performClick()));
-        String savedModel = preferences.getString("motion_models_v1", null);
-        assertNotNull(savedModel);
-        onSettingsDialog(dialog -> assertTrue(dialog.findViewById(R.id.motion_teach_marker).performClick()));
-        awaitTrainingDialog();
-        onTrainingDialog(dialog -> assertTrue(dialog.findViewById(R.id.motion_training_start).performClick()));
-        await("relearning starts while the prior model stays saved", 5_000, this::motionTrainingActive);
-        onNotebook(activity -> ((MotionCaptureControls) readField(activity, "motionControls"))
-                .submitTrainingDemonstration(syntheticMotionDemonstration(MotionAction.MARKER, 1.05f)));
-        onTrainingDialog(dialog -> assertTrue(dialog.findViewById(R.id.motion_training_cancel).performClick()));
-        assertEquals("Cancelling a partial replacement preserves the saved model exactly", savedModel,
-                preferences.getString("motion_models_v1", null));
-        onSettingsDialog(dialog -> assertTrue(dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()));
-        notebook.recreate();
-        awaitNotebookReady();
-        onNotebook(activity -> {
-            MotionCaptureControls controls = (MotionCaptureControls) readField(activity, "motionControls");
-            assertTrue(controls.isTrained(MotionAction.MARKER));
-            assertTrue(controls.isTrained(MotionAction.AUDIO));
-        });
-        await("Record regains focus after reopening the saved motion profile", 5_000, () -> {
+    private void awaitRecordWindowFocus(boolean expected) throws Exception {
+        await("Record window focus becomes " + expected, 5_000, () -> {
             AtomicBoolean focused = new AtomicBoolean();
             onNotebook(activity -> focused.set(activity.hasWindowFocus()));
-            return focused.get();
-        });
-        onNotebook(activity -> invokeMotionCallback(activity, "motionForwardShake"));
-        await("hands-free narration is ready for a recognized trained marker callback", 15_000,
-                () -> recordingState(RecordingService.State.RECORDING) && RecordingService.snapshot().locked
-                        && RecordingService.snapshot().elapsedMs() >= 1000);
-        RecordingService.Snapshot started = RecordingService.snapshot();
-        ownedEntryId = started.entryId;
-        onNotebook(activity -> invokeMotionCallback(activity, "motionAudioMarker"));
-        await("recognized marker callback journals an audio-relative marker", 5_000,
-                () -> RecordingService.snapshot().markerCount == 1);
-        assertEquals(started.entryId, RecordingService.snapshot().entryId);
-        assertEquals(started.startedElapsedRealtime, RecordingService.snapshot().startedElapsedRealtime);
-        assertTrue(RecordingService.snapshot().locked);
-        onNotebook(activity -> invokeMotionCallback(activity, "motionForwardShake"));
-        await("motion toggle ends the marked original", 15_000, () -> recordingState(RecordingService.State.IDLE));
-        awaitPublishedMedia(1, 0, 0);
-        JSONObject audio = readEntry(started.entryId).getJSONArray("media").getJSONObject(0);
-        assertEquals(1, audio.getJSONArray("markers").length());
-        assertEquals(audio.getString("id"), audio.getJSONArray("markers").getJSONObject(0).getString("mediaId"));
-        assertEncodedAudio(store.mediaUri(projectUri, audio.getString("path")));
-        openMotionSettings();
-        onSettingsDialog(dialog -> assertTrue(dialog.findViewById(R.id.motion_reset_marker).performClick()));
-        onNotebook(activity -> {
-            MotionCaptureControls controls = (MotionCaptureControls) readField(activity, "motionControls");
-            assertFalse(controls.isTrained(MotionAction.MARKER));
-            assertTrue("Resetting marker motion preserves the separate learned audio motion", controls.isTrained(MotionAction.AUDIO));
-        });
-        onSettingsDialog(dialog -> assertTrue(dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()));
-        notebook.recreate();
-        awaitNotebookReady();
-        onNotebook(activity -> {
-            MotionCaptureControls controls = (MotionCaptureControls) readField(activity, "motionControls");
-            assertFalse(controls.isTrained(MotionAction.MARKER));
-            assertTrue(controls.isTrained(MotionAction.AUDIO));
+            return focused.get() == expected;
         });
     }
 
-    private MotionSequence syntheticMotionDemonstration(MotionAction action, float amplitude) {
-        MotionSequence.Builder builder = new MotionSequence.Builder();
-        long base = 1_000_000_000L;
-        for (int i = 0; i <= 20; i++) {
-            float pulse = (i >= 2 && i < 8 ? 10f : i >= 10 && i < 16 ? -8f : 0f) * amplitude;
-            float x = action == MotionAction.MARKER ? pulse : 0f;
-            float y = action == MotionAction.AUDIO ? pulse : action == MotionAction.PHOTO ? -pulse : 0f;
-            builder.add(base + i * 20_000_000L, x, y, 0f, 0f, 0f, 0f);
+    private boolean containsSeekBar(View view) {
+        if (view instanceof SeekBar) return true;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) if (containsSeekBar(group.getChildAt(i))) return true;
         }
-        return builder.build();
+        return false;
     }
 
-    private boolean motionTrainingActive() {
-        AtomicBoolean active = new AtomicBoolean();
-        onNotebook(activity -> active.set(((MotionCaptureControls) readField(activity, "motionControls")).isTraining()));
-        return active.get();
-    }
-
-    private void awaitTrainingDialog() throws Exception {
-        await("the native teaching dialog has focus", 5_000, () -> {
-            AtomicBoolean ready = new AtomicBoolean();
-            onNotebook(activity -> {
-                AlertDialog dialog = (AlertDialog) readField(activity, "trainingDialog");
-                ready.set(dialog != null && dialog.isShowing() && dialog.getWindow() != null
-                        && dialog.getWindow().getDecorView().hasWindowFocus());
-            });
-            return ready.get();
-        });
-    }
-
-    private void onTrainingDialog(Consumer<AlertDialog> action) {
-        onNotebook(activity -> {
-            AlertDialog dialog = (AlertDialog) readField(activity, "trainingDialog");
-            assertNotNull(dialog);
-            assertTrue(dialog.isShowing());
-            action.accept(dialog);
-        });
-    }
-
-    private void openMotionSettings() throws Exception {
+    private void openShakeSettings() throws Exception {
         onNotebook(activity -> assertTrue(activity.findViewById(R.id.settings_button).performClick()));
-        await("the native motion Settings dialog opens", 5_000, () -> {
+        await("the native shake Settings dialog opens", 5_000, () -> {
             AtomicBoolean showing = new AtomicBoolean();
             onNotebook(activity -> {
                 AlertDialog dialog = (AlertDialog) readField(activity, "settingsDialog");
@@ -2919,13 +2788,13 @@ public final class NativeCaptureInstrumentedTest {
         }
     }
 
-    private static void invokeMotionCallback(MainActivity activity, String callback) {
+    private static void invokeShakeCallback(MainActivity activity) {
         try {
-            java.lang.reflect.Method method = MainActivity.class.getDeclaredMethod(callback);
+            java.lang.reflect.Method method = MainActivity.class.getDeclaredMethod("toggleRecordingFromShake");
             method.setAccessible(true);
             method.invoke(activity);
         } catch (ReflectiveOperationException error) {
-            throw new AssertionError("Recognized motion callback failed: " + callback, error);
+            throw new AssertionError("Recognized shake callback failed", error);
         }
     }
 
@@ -3236,7 +3105,7 @@ public final class NativeCaptureInstrumentedTest {
     }
 
     private void saveScreenshot(String name) throws IOException {
-        name = "beta16-final-" + name;
+        name = "beta17-final-" + name;
         awaitScreenshotMainTurn();
         // Held feedback intentionally keeps drawing. A fully idle UI is neither required
         // nor a bounded condition here. Behavior is established by each test's assertions;

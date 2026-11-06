@@ -42,7 +42,6 @@ import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -84,7 +83,7 @@ public class MainActivity extends Activity {
     private int background, panel, ink, muted, accent, buttonInk, border, recordingColor, preferredMicSize;
     private LinearLayout root, entryList, capturePanel, capturePage, listPage, recentCard;
     private TextView projectTitle, projectPath, recordStatus, recordTitle, recordHelp, attachNotice, countLabel;
-    private TextView recentTitle, recentPreview, motionSettingsMessage;
+    private TextView recentTitle, recentPreview;
     private Button captureTab, filesTab, closeNotesButton, markerButton, markersFilter;
     private EditText notesSearch;
     private LinearLayout searchControls, tagFilters;
@@ -104,7 +103,7 @@ public class MainActivity extends Activity {
     private Uri legacyProject;
     private EntryViewer entryViewer;
     private AlertDialog noteDialog;
-    private AlertDialog settingsDialog, trainingDialog;
+    private AlertDialog settingsDialog;
     private InlineCamera inlineCamera;
     private FrameLayout inlineCameraContainer;
     private Uri pendingTextProject, pendingCameraProject;
@@ -206,11 +205,7 @@ public class MainActivity extends Activity {
             quickExistingEntry = savedInstanceState.getString("quickExistingEntry");
         }
         palette();
-        motionControls = new MotionCaptureControls(this, new MotionCaptureControls.Listener() {
-            @Override public void onForwardShake() { motionForwardShake(); }
-            @Override public void onTwist() { motionTwist(); }
-            @Override public void onAudioMarker() { motionAudioMarker(); }
-        });
+        motionControls = new MotionCaptureControls(this, this::toggleRecordingFromShake);
         buildUi();
         RecordingShortcuts.publish(this);
         if (savedInstanceState == null) acceptQuickIntent(getIntent());
@@ -1104,7 +1099,7 @@ public class MainActivity extends Activity {
         if (recording) {
             boolean writing = captureKey(snapshot).equals(textRecordingKey);
             recordStatus.setText(writing ? "Recording while you write" : snapshot.locked
-                    ? preferences.getBoolean("motion_controls", true) ? "Recording · tap or shake to save" : "Recording · tap to save"
+                    ? shakeEnabled() ? "Recording · tap or shake to save" : "Recording · tap to save"
                     : "Recording · release to save");
             recordTitle.setText(duration(snapshot.elapsedMs()));
             recordHelp.setText(writing ? "Save or skip text to finish" : pendingPhotoCount > 0
@@ -1131,11 +1126,7 @@ public class MainActivity extends Activity {
                     : publication.finalizedCount > 0 ? "Updating ZIP · " + publication.finalizedCount + " file(s) waiting"
                     : publication.running ? "Verifying project ZIP…" : project == null ? "Choose a project to begin" : "Ready · project ZIP up to date");
             recordTitle.setText("Hold to record");
-            recordHelp.setText(preferences.getBoolean("motion_controls", true)
-                    ? motionControls != null && (motionControls.isTrained(MotionAction.AUDIO)
-                            || motionControls.isTrained(MotionAction.PHOTO) || motionControls.isTrained(MotionAction.MARKER))
-                            ? "Your motions are ready · ↗ adds a marker"
-                            : "Forward shake: audio · twist: photo · ↗ marker"
+            recordHelp.setText(shakeEnabled() ? "Shake to start / stop · ↗ adds a marker"
                     : "Slide ↗ to mark · return to center to repeat");
             recordButton.setContentDescription("Hold to record. Swipe diagonally upper right for an audio marker, up to lock, left for photo, right for video, down for text. Return to center to repeat. Double tap with accessibility to start hands-free.");
         }
@@ -1181,25 +1172,26 @@ public class MainActivity extends Activity {
                 : touching && attachNotice.getVisibility() != View.GONE ? View.INVISIBLE : View.GONE);
     }
 
+    private boolean shakeEnabled() {
+        return motionControls != null && motionControls.isEnabled() && motionControls.isAvailable();
+    }
+
     private boolean motionReady() {
-        return visible && resumed && !destroyed && hasWindowFocus() && activeTab == 0 && !notesExpanded
-                && !notesDragging && notesAnimator == null && project != null && !projectOperation && !permissionRequest
+        return shakeEnabled() && visible && resumed && !destroyed && hasWindowFocus()
+                && activeTab == 0 && !notesExpanded && !notesDragging && notesAnimator == null
+                && project != null && !projectOperation && !permissionRequest && quickMode == QUICK_NONE
+                && !FloatingRecorderService.isShowing()
                 && (noteDialog == null || !noteDialog.isShowing())
                 && (entryViewer == null || !entryViewer.isShowing())
-                && (settingsDialog == null || !settingsDialog.isShowing())
-                && (trainingDialog == null || !trainingDialog.isShowing())
-                && preferences.getBoolean("motion_controls", true);
+                && (settingsDialog == null || !settingsDialog.isShowing());
     }
 
     private void updateMotionControls() {
         if (motionControls == null) return;
-        // Teaching owns sensor input while its dialog is visible. Regular recognition
-        // resumes only after both dialogs close and Record regains focus.
-        if (trainingDialog != null && trainingDialog.isShowing()) return;
         if (motionReady()) motionControls.start(); else motionControls.stop();
     }
 
-    private void motionForwardShake() {
+    private void toggleRecordingFromShake() {
         if (!motionReady()) return;
         RecordingService.Snapshot capture = RecordingService.snapshot();
         if (capture.state == RecordingService.State.RECORDING || capture.state == RecordingService.State.STARTING) {
@@ -1212,21 +1204,11 @@ public class MainActivity extends Activity {
             recordButton.getParent().requestDisallowInterceptTouchEvent(false);
             updateAttachmentNotice();
             recordButton.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-        } else if (!RecordingService.isBusy() && canRecord()) {
+        } else if (!RecordingService.isBusy() && !cameraWorkPending() && canRecord()) {
             startRecording();
             RecordingService.lock(this);
             recordButton.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
         }
-    }
-
-    private void motionTwist() {
-        if (!motionReady() || RecordingService.snapshot().state != RecordingService.State.RECORDING) return;
-        microphoneAction("photo");
-    }
-
-    private void motionAudioMarker() {
-        if (!motionReady() || RecordingService.snapshot().state != RecordingService.State.RECORDING) return;
-        addGestureMarker();
     }
 
     private void camera(String mode, String entryId) {
@@ -1956,41 +1938,19 @@ public class MainActivity extends Activity {
         content.addView(text("Available location and sensors. Capture times are always kept.", 12, muted));
         Switch motion = new Switch(this);
         motion.setId(R.id.motion_controls_switch);
-        motion.setText("Motion controls");
+        motion.setText("Shake to record");
         motion.setTextColor(ink);
         motion.setTextSize(15);
-        motion.setChecked(preferences.getBoolean("motion_controls", true));
+        motion.setChecked(motionControls.isEnabled());
         motion.setPadding(0, dp(20), 0, dp(10));
         motion.setOnCheckedChangeListener((view, enabled) -> {
-            if (enabled && motionControls.hasUnreadableProfiles()) {
-                motion.setChecked(false);
-                toast("Reset or teach a motion before enabling motion controls again.");
-                return;
-            }
-            preferences.edit().putBoolean("motion_controls", enabled).apply();
-            if (enabled) motionControls.acknowledgeSettingsWarning();
-            updateMotionSettingsMessage();
+            motionControls.setEnabled(enabled);
             updateMotionControls();
         });
         content.addView(motion);
-        motionSettingsMessage = text("", 12, accent);
-        motionSettingsMessage.setPadding(0, 0, 0, dp(12));
-        content.addView(motionSettingsMessage);
-        updateMotionSettingsMessage();
-        content.addView(text("Tune each action or teach it your own motion. Custom motions take priority over the defaults. Use a distinct motion for each action.", 12, muted));
-        addMotionSetting(content, MotionAction.AUDIO, "Audio · start / stop",
-                R.id.motion_audio_sensitivity, R.id.motion_audio_value, R.id.motion_teach_audio, R.id.motion_reset_audio);
-        addMotionSetting(content, MotionAction.PHOTO, "Photo · while recording",
-                R.id.motion_photo_sensitivity, R.id.motion_photo_value, R.id.motion_teach_photo, R.id.motion_reset_photo);
-        addMotionSetting(content, MotionAction.MARKER, "Marker · while recording",
-                R.id.motion_marker_sensitivity, R.id.motion_marker_value, R.id.motion_teach_marker, R.id.motion_reset_marker);
-        if (motionControls != null) {
-            MotionCaptureControls.Availability available = motionControls.availability();
-            if (!available.forwardShake || !available.twist)
-                content.addView(text("Motion sensors unavailable: " + (!available.forwardShake ? "forward shake" : "")
-                        + (!available.forwardShake && !available.twist ? ", " : "")
-                        + (!available.twist ? "twist" : "") + ". Touch controls still work.", 12, muted));
-        }
+        content.addView(text("Shake once to start. Shake again to stop. Works while Record is open.", 12, muted));
+        if (!motionControls.isAvailable())
+            content.addView(text("An acceleration sensor is unavailable. Touch controls still work.", 12, muted));
         addAction(content, "Allow location metadata", () -> {
             preferences.edit().putBoolean("location_permission_asked", true).apply();
             permissionRequest = true;
@@ -2016,152 +1976,13 @@ public class MainActivity extends Activity {
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Settings").setView(scroll(content)).setNegativeButton("Done", null).create();
         settingsDialog = dialog;
         dialog.setOnDismissListener(ignored -> {
-            if (trainingDialog != null) trainingDialog.dismiss();
-            if (settingsDialog == dialog) { settingsDialog = null; motionSettingsMessage = null; }
+            if (settingsDialog == dialog) settingsDialog = null;
             updateMotionControls();
         });
         darkSwitch.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("dark_mode", checked).apply(); dialog.dismiss(); recreate(); });
         metadata.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("metadata_enabled", checked).apply(); MetadataCollector.start(this); });
         dialog.show();
         updateMotionControls();
-    }
-
-    private String motionName(MotionAction action) {
-        return action == MotionAction.AUDIO ? "Audio" : action == MotionAction.PHOTO ? "Photo" : "Marker";
-    }
-
-    private void updateMotionSettingsMessage() {
-        if (motionSettingsMessage == null) return;
-        String error = motionControls.settingsLoadError();
-        motionSettingsMessage.setText(error == null ? "" : error);
-        motionSettingsMessage.setVisibility(error == null ? View.GONE : View.VISIBLE);
-    }
-
-    private String motionProfileLabel(MotionAction action) {
-        if (motionControls.isTrained(action)) return "Your motion · 3 examples saved";
-        if (action == MotionAction.AUDIO) return "Default: forward push, then stop";
-        if (action == MotionAction.PHOTO) return "Default: clockwise or counterclockwise twist";
-        return "Teach a motion to enable markers by shake";
-    }
-
-    private void addMotionSetting(LinearLayout content, MotionAction action, String title,
-                                  int sliderId, int valueId, int teachId, int resetId) {
-        LinearLayout section = column();
-        section.setPadding(dp(14), dp(16), dp(14), dp(14));
-        section.setBackground(shape(panel, 20, border));
-        TextView heading = text(title, 15, ink);
-        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        section.addView(heading);
-        TextView profile = text(motionProfileLabel(action), 12, muted);
-        profile.setPadding(0, dp(5), 0, dp(8));
-        section.addView(profile);
-        TextView value = text("Sensitivity: " + motionControls.getSensitivity(action) + " / 100", 13, ink);
-        value.setId(valueId);
-        section.addView(value);
-        SeekBar sensitivity = new SeekBar(this);
-        sensitivity.setId(sliderId);
-        sensitivity.setMax(100);
-        sensitivity.setProgress(motionControls.getSensitivity(action));
-        sensitivity.setMinimumHeight(dp(48));
-        sensitivity.setContentDescription(motionName(action) + " motion sensitivity. Higher is easier to trigger.");
-        sensitivity.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
-                motionControls.setSensitivity(action, progress);
-                value.setText("Sensitivity: " + progress + " / 100");
-            }
-            @Override public void onStartTrackingTouch(SeekBar bar) { }
-            @Override public void onStopTrackingTouch(SeekBar bar) { }
-        });
-        section.addView(sensitivity, new LinearLayout.LayoutParams(-1, dp(48)));
-        section.addView(text("Lower: more deliberate · Higher: easier to trigger", 11, muted));
-        LinearLayout actions = row();
-        actions.setPadding(0, dp(8), 0, 0);
-        Button teach = smallButton("Teach motion");
-        teach.setId(teachId);
-        teach.setOnClickListener(view -> teachMotion(action, profile));
-        LinearLayout.LayoutParams teachLayout = new LinearLayout.LayoutParams(0, -2, 1);
-        teachLayout.setMargins(0, 0, dp(6), 0);
-        actions.addView(teach, teachLayout);
-        Button reset = smallButton("Reset motion");
-        reset.setId(resetId);
-        reset.setOnClickListener(view -> {
-            motionControls.resetTraining(action);
-            profile.setText(motionProfileLabel(action));
-            updateMotionSettingsMessage();
-            toast(action == MotionAction.MARKER ? "Marker motion cleared. Teach a new one to enable it." : "Default motion restored.");
-        });
-        LinearLayout.LayoutParams resetLayout = new LinearLayout.LayoutParams(0, -2, 1);
-        resetLayout.setMargins(dp(6), 0, 0, 0);
-        actions.addView(reset, resetLayout);
-        section.addView(actions);
-        LinearLayout.LayoutParams sectionLayout = new LinearLayout.LayoutParams(-1, -2);
-        sectionLayout.topMargin = dp(16);
-        content.addView(section, sectionLayout);
-    }
-
-    private void teachMotion(MotionAction action, TextView profile) {
-        if (trainingDialog != null && trainingDialog.isShowing()) return;
-        LinearLayout content = dialogColumn();
-        content.addView(text("Choose a short, distinct motion for " + motionName(action).toLowerCase(Locale.ROOT)
-                + ". Tap Start learning, hold still, then demonstrate it three times with a pause between examples. Hold the phone as you will when recording.", 14, ink));
-        content.addView(text("Natural differences in direction, strength, and timing are allowed. Three accepted examples save automatically. Your previous motion stays until the new one is ready.", 12, muted));
-        TextView status = text("Ready to learn · 0 / 3 examples", 15, accent);
-        status.setId(R.id.motion_training_status);
-        status.setPadding(0, dp(20), 0, dp(16));
-        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        content.addView(status);
-        Button start = smallButton("Start learning");
-        start.setId(R.id.motion_training_start);
-        content.addView(start, new LinearLayout.LayoutParams(-1, -2));
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Teach " + motionName(action).toLowerCase(Locale.ROOT) + " motion")
-                .setView(scroll(content)).setNegativeButton("Cancel", null).create();
-        trainingDialog = dialog;
-        dialog.setOnDismissListener(ignored -> {
-            motionControls.cancelTraining();
-            profile.setText(motionProfileLabel(action));
-            if (trainingDialog == dialog) trainingDialog = null;
-            updateMotionControls();
-        });
-        start.setOnClickListener(view -> {
-            start.setEnabled(false);
-            status.setText("Hold still, then make your motion · 0 / 3 examples");
-            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setText("Cancel");
-            motionControls.beginTraining(action, new MotionCaptureControls.TrainingListener() {
-                private boolean current() { return !destroyed && trainingDialog == dialog && dialog.isShowing(); }
-                @Override public void onProgress(int completed, int required, String message) {
-                    if (!current()) return;
-                    status.setText(completed + " / " + required + " examples · " + message);
-                    if (completed > 0) status.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
-                }
-                @Override public void onComplete(MotionAction learned) {
-                    if (!current()) return;
-                    status.setText("Saved · 3 / 3 examples. Your motion is ready.");
-                    profile.setText(motionProfileLabel(action));
-                    updateMotionSettingsMessage();
-                    start.setText("Learn again");
-                    start.setEnabled(true);
-                    dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setText("Done");
-                    status.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-                }
-                @Override public void onError(String message) {
-                    if (!current()) return;
-                    status.setText(message);
-                    start.setText("Try again");
-                    start.setEnabled(true);
-                }
-                @Override public void onCancelled() {
-                    if (!current()) return;
-                    status.setText("Learning paused. Start again when ready.");
-                    start.setText("Start learning");
-                    start.setEnabled(true);
-                }
-            });
-        });
-        dialog.show();
-        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setId(R.id.motion_training_cancel);
-        dialog.getWindow().getDecorView().getViewTreeObserver().addOnWindowFocusChangeListener(focused -> {
-            if (!focused && trainingDialog == dialog && dialog.isShowing()) motionControls.cancelTraining();
-        });
     }
 
     private void retryPending() {
@@ -2225,7 +2046,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onPause() {
         resumed = false;
-        if (motionControls != null) { motionControls.cancelTraining(); motionControls.stop(); }
+        if (motionControls != null) motionControls.stop();
         super.onPause();
     }
 
@@ -2249,7 +2070,7 @@ public class MainActivity extends Activity {
     @Override protected void onStop() {
         visible = false;
         if (!isChangingConfigurations() && !permissionRequest && !overlayPermissionRequest) cancelQuickCapture();
-        if (motionControls != null) { motionControls.cancelTraining(); motionControls.stop(); }
+        if (motionControls != null) motionControls.stop();
         renderPage();
         clearPendingPhotos();
         main.removeCallbacks(ticker);
@@ -2271,8 +2092,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         destroyed = true;
-        if (motionControls != null) { motionControls.cancelTraining(); motionControls.stop(); }
-        if (trainingDialog != null) trainingDialog.dismiss();
+        if (motionControls != null) motionControls.close();
         if (settingsDialog != null) settingsDialog.dismiss();
         cancelNotesMotion();
         if (Build.VERSION.SDK_INT >= 33 && notesBackCallback != null) {

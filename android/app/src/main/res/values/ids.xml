@@ -30,21 +30,6 @@
     <item type="id" name="add_marker" />
     <item type="id" name="mic_marker_action" />
     <item type="id" name="motion_controls_switch" />
-    <item type="id" name="motion_audio_sensitivity" />
-    <item type="id" name="motion_photo_sensitivity" />
-    <item type="id" name="motion_marker_sensitivity" />
-    <item type="id" name="motion_audio_value" />
-    <item type="id" name="motion_photo_value" />
-    <item type="id" name="motion_marker_value" />
-    <item type="id" name="motion_teach_audio" />
-    <item type="id" name="motion_teach_photo" />
-    <item type="id" name="motion_teach_marker" />
-    <item type="id" name="motion_reset_audio" />
-    <item type="id" name="motion_reset_photo" />
-    <item type="id" name="motion_reset_marker" />
-    <item type="id" name="motion_training_start" />
-    <item type="id" name="motion_training_cancel" />
-    <item type="id" name="motion_training_status" />
     <item type="id" name="mic_photo_action" />
     <item type="id" name="mic_video_action" />
     <item type="id" name="mic_text_action" />

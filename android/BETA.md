@@ -1,22 +1,22 @@
-# Fieldnote 0.2.0-beta.16
+# Fieldnote 0.2.0-beta.17
 
-Android beta (version code 17) for Android 8.0 and later.
+Android beta (version code 18) for Android 8.0 and later.
 No Google services are needed; no network permission is requested.
 Root access is neither needed nor used.
 
 ## Install
 
-Download the APK from the [beta 16 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.16).
+Download the APK from the [beta 17 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.17).
 Transfer it to the phone and open it from Files. If prompted, allow that
 installer source to install apps, then complete installation. This personal beta
 uses the local signing certificate; updates over earlier betas must use the same
 certificate. Keep the existing app installed to preserve its permissions,
 settings, and any pending captures.
 
-Beta 16 adds a **Record now** home-screen shortcut and a mic-only widget that
-opens a floating recorder over other apps. Both use your latest-created project,
-or keep the project and entry of an existing recording. The portable ZIP format
-and background saving remain unchanged.
+Beta 17 simplifies phone motion to one action: shake to start audio, then shake
+again to stop. Directional gestures, shake-to-photo/marker, training, and
+sensitivity controls have been removed. Touch gestures, home-screen shortcuts,
+the floating microphone, and background ZIP saving remain available.
 The [validation summary](../docs/VALIDATION.md) records the checks and their limits.
 See [Building Fieldnote](BUILDING.md) to build or test from source.
 
@@ -136,54 +136,30 @@ by the text editor. **Stop all** ends
 the floating session's audio and video and hides the control. Turning the screen
 off also hides the control; explicitly locked narration can continue. Finish
 any floating camera capture or text editor before switching capture surfaces.
-Phone-motion gestures currently work only on Record inside the main app, not
+Shake to record works only on Record inside the main app, not
 in the floating overlay.
 
-## Motion controls
+## Shake to record
 
-**Settings → Motion controls** is on by default. Motion detection runs only when
-Record is visible and focused, with a project open and no dialog open. By default,
-with the screen facing you, a quick push away followed by a stop toggles locked,
-hands-free audio. During recording, a short clockwise or counterclockwise twist
-around the screen's center, then a stop, takes a linked photo. A motion for Marker
-must first be taught; Photo and Marker motions act only while audio is recording.
+**Settings → Shake to record** enables one simple action. While Record is open
+and focused with a project selected, shake the phone to start locked, hands-free
+audio. Pause briefly, then shake again to stop and save. There is no required
+direction, teaching, or separate photo/marker shake. You can also tap the locked
+microphone to stop.
 
-Settings has separate **Audio**, **Photo**, and **Marker** sensitivity sliders
-from 0 to 100; higher means easier to trigger. Raise only the relevant slider if
-an intended motion is missed, or lower it if ordinary movement triggers an action.
-These sliders tune phone-motion detection, not the microphone's touch distances.
+One shake burst triggers once. The detector waits for a quiet interval and a
+cooldown before accepting another burst, so continued shaking does not immediately
+stop the recording it just started. It uses the accelerometer; no extra permission
+or root access is required. Physical phone sensitivity remains unverified.
 
-For each action, choose **Teach motion**, then **Start learning**. Hold still,
-demonstrate your chosen short motion, pause, and repeat until three examples are
-accepted. Hold the phone as you will while recording, and choose motions distinct
-from those assigned to other actions. Three accepted examples save automatically;
-Cancel or an error preserves the previous learned motion. Motions can use any
-direction, with natural variation in angle, timing, and strength. Learned motions
-take priority over built-in gestures, and ambiguous matches are ignored.
+The setting is on by default. Upgrades preserve an explicitly disabled motion
+switch. Old trained profiles are no longer read or used. Photos, video, text,
+and markers remain available through the microphone's touch gestures, including
+during a shake-started recording.
 
-**Reset motion** restores Audio's forward push or Photo's clockwise/counterclockwise
-twist. For Marker it clears the assignment; use Teach motion again to enable it.
-
-If saved motion profiles cannot be read, Settings shows a warning and motion
-controls stay off. The unreadable data are retained until you explicitly reset or
-teach a motion; changing sensitivity alone does not replace them. After repair,
-enable Motion controls again. An invalid saved switch value is also turned off
-with a warning to review the settings.
-
-The microphone's touch swipes still work during motion-started narration. Lift
-your thumb after a photo, video, or marker gesture and narration keeps running;
-use your Audio motion or tap the locked microphone to stop. Pause between motions
-to let the detector rearm.
-
-Normal capture recognition stops outside Record, in the background, and while
-dialogs are open. The teaching dialog temporarily samples sensors for learning;
-it does not trigger capture actions. Normal recognition resumes after closing
-Settings and returning to Record.
-Detection requests 50 Hz linear acceleration where available, otherwise filtered
-raw acceleration, plus the gyroscope for twists. It needs no extra permissions, root
-access, or always-running sensor service. Physical Pixel/GrapheneOS gesture
-sensitivity is unverified; software traces and simulated callbacks cannot replace
-testing the actual phone in hand.
+Shake detection stops in the background, outside Record, while notes/settings or
+other dialogs are open, and while the floating microphone is shown. The floating
+microphone retains its touch controls; shaking does not operate the overlay.
 
 ## Search, tags, and audio bookmarks
 
@@ -271,7 +247,7 @@ these rules do not control your storage provider's sync, copies, or shared ZIPs.
 Private playback caches and pending recovery data remain intentionally available.
 Behavior across every manufacturer's backup/transfer implementation is unverified.
 
-**Settings** changes the default save location, optional metadata, motion controls,
+**Settings** changes the default save location, optional metadata, Shake to record,
 and dark navy/light-blue appearance, and offers the home-screen capture controls
 described above. The launcher uses the prototype's fₙ mark.
 Changing the default location does not move existing project ZIPs.
