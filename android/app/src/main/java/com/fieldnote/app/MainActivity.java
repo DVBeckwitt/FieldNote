@@ -14,14 +14,8 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.content.pm.PackageManager;
-import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.LinearGradient;
 import android.graphics.Matrix;
-import android.graphics.Paint;
-import android.graphics.RadialGradient;
-import android.graphics.RectF;
-import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
@@ -37,7 +31,6 @@ import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
-import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.animation.PathInterpolator;
 import android.text.InputType;
 import android.text.Editable;
@@ -71,12 +64,13 @@ import java.util.concurrent.Executors;
 /** Native notebook UI. Completed projects live in the selected ZIP, not preferences. */
 public class MainActivity extends Activity {
     private static final int PICK_CREATE = 40, PICK_DEFAULT = 41, PICK_IMPORT = 42,
-            PICK_LEGACY = 43, PICK_MIGRATION_DESTINATION = 44;
-    private static final int PERMISSION_MIC = 50, PERMISSION_CAMERA = 51, PERMISSION_LOCATION = 52;
+            PICK_LEGACY = 43, PICK_MIGRATION_DESTINATION = 44, PICK_OVERLAY = 45;
+    private static final int PERMISSION_MIC = 50, PERMISSION_CAMERA = 51, PERMISSION_LOCATION = 52, PERMISSION_FLOATING = 53;
     private static final long HOLD_DELAY_MS = 180;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final ExecutorService localIo = Executors.newSingleThreadExecutor();
+    private final ExecutorService quickIo = Executors.newSingleThreadExecutor();
     private SharedPreferences preferences;
     private ProjectStore store;
     private Uri projectUri;
@@ -137,6 +131,13 @@ public class MainActivity extends Activity {
     private RecordingService.State observedState;
     private String observedError;
     private volatile long refreshGeneration;
+    // A launch request is consumed before capture starts, never replayed on ordinary resume.
+    private static final int QUICK_NONE = 0, QUICK_RECORD = 1, QUICK_FLOATING = 2;
+    private int quickMode;
+    private boolean quickResolving, quickReady, quickPermission, overlayPermissionRequest;
+    private long quickGeneration;
+    private Uri quickProject;
+    private String quickExistingEntry;
     private final Runnable beginHeldRecording = () -> {
         if (!touching || stopOnRelease || gesture.getDirection() != RecordingGesture.Direction.NONE) return;
         if (canRecord()) { startedByTouch = true; startRecording(); }
@@ -197,6 +198,12 @@ public class MainActivity extends Activity {
             if (micProject != null) pendingMicProject = Uri.parse(micProject);
             pendingCameraHeld = savedInstanceState.getBoolean("pendingCameraHeld");
             permissionRequest = savedInstanceState.getBoolean("permissionRequest");
+            quickMode = savedInstanceState.getInt("quickMode", QUICK_NONE);
+            quickPermission = savedInstanceState.getBoolean("quickPermission");
+            overlayPermissionRequest = savedInstanceState.getBoolean("overlayPermissionRequest");
+            String quickUri = savedInstanceState.getString("quickProject");
+            if (quickUri != null) quickProject = Uri.parse(quickUri);
+            quickExistingEntry = savedInstanceState.getString("quickExistingEntry");
         }
         palette();
         motionControls = new MotionCaptureControls(this, new MotionCaptureControls.Listener() {
@@ -205,7 +212,165 @@ public class MainActivity extends Activity {
             @Override public void onAudioMarker() { motionAudioMarker(); }
         });
         buildUi();
-        refreshProject();
+        RecordingShortcuts.publish(this);
+        if (savedInstanceState == null) acceptQuickIntent(getIntent());
+        else if (quickMode != QUICK_NONE) resolveQuickProject();
+        if (quickMode == QUICK_NONE) refreshProject();
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        acceptQuickIntent(intent);
+    }
+
+    private void acceptQuickIntent(Intent intent) {
+        int mode = RecordingShortcuts.isRecordIntent(this, intent) ? QUICK_RECORD
+                : RecordingShortcuts.isOverlayIntent(this, intent) ? QUICK_FLOATING : QUICK_NONE;
+        if (mode == QUICK_NONE) return;
+        setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
+        if (quickMode != QUICK_NONE) return; // Repeated launcher taps coalesce.
+        if (projectOperation || cameraWorkPending() || FloatingRecorderService.isBusyForHandoff() || permissionRequest
+                || (noteDialog != null && noteDialog.isShowing()) || restoredNote != null) {
+            toast("Finish the current capture or editor before quick recording.");
+            return;
+        }
+        RecordingService.Snapshot capture = RecordingService.snapshot();
+        if (capture.state == RecordingService.State.SAVING || capture.state == RecordingService.State.PAUSED) {
+            toast("Finish the current recording first.");
+            return;
+        }
+        if (settingsDialog != null) settingsDialog.dismiss();
+        if (entryViewer != null) entryViewer.dismiss();
+        quickMode = mode;
+        // An existing capture keeps its identity and project, regardless of newer projects.
+        quickProject = RecordingService.isRecording() ? capture.projectUri : null;
+        quickExistingEntry = RecordingService.isRecording() ? capture.entryId : null;
+        quickReady = false;
+        selectTab(0);
+        resolveQuickProject();
+    }
+
+    private void resolveQuickProject() {
+        if (quickMode == QUICK_NONE || quickResolving || destroyed) return;
+        quickResolving = true;
+        quickReady = false;
+        projectLoading = true;
+        ++refreshGeneration;
+        final long generation = ++quickGeneration;
+        final Uri boundProject = quickProject;
+        quickIo.execute(() -> {
+            try {
+                Uri destination = boundProject != null ? boundProject : store.lastCreatedProject();
+                if (destination == null) throw new java.io.IOException("Create a project in Fieldnote, then use the home-screen control.");
+                // A verified local index lets capture start while its ZIP is being
+                // published or the provider is temporarily offline. Originals stage
+                // locally and publication still validates the external destination.
+                JSONObject loaded = store.readCachedProject(destination);
+                if (loaded == null) {
+                    if (!store.isArchive(destination)) throw new java.io.IOException("Open and convert the latest project in Fieldnote before using quick capture.");
+                    loaded = store.readProject(destination);
+                }
+                final JSONObject ready = loaded;
+                main.post(() -> {
+                    if (destroyed || generation != quickGeneration || quickMode == QUICK_NONE) return;
+                    quickResolving = false;
+                    projectLoading = false;
+                    quickProject = destination;
+                    quickReady = true;
+                    projectUri = destination;
+                    project = ready;
+                    store.setCurrentProject(destination);
+                    renderEntries();
+                    continueQuickCapture();
+                });
+            } catch (Exception failure) {
+                main.post(() -> {
+                    if (destroyed || generation != quickGeneration) return;
+                    cancelQuickCapture();
+                    renderEntries();
+                    toast(errorMessage(failure));
+                });
+            }
+        });
+    }
+
+    private void cancelQuickCapture() {
+        if (quickResolving) projectLoading = false;
+        quickMode = QUICK_NONE;
+        quickProject = null;
+        quickExistingEntry = null;
+        quickReady = quickResolving = quickPermission = overlayPermissionRequest = false;
+        ++quickGeneration;
+    }
+
+    private void continueQuickCapture() {
+        if (quickMode == QUICK_NONE || !quickReady || quickResolving || destroyed || !visible
+                || !resumed || !hasWindowFocus() || permissionRequest || overlayPermissionRequest || projectLoading) return;
+        if (projectOperation || cameraWorkPending() || FloatingRecorderService.isBusyForHandoff()
+                || project == null || !java.util.Objects.equals(quickProject, projectUri)) {
+            cancelQuickCapture();
+            toast("Quick capture could not start. Open the project and try again.");
+            return;
+        }
+        RecordingService.Snapshot capture = RecordingService.snapshot();
+        if (quickExistingEntry != null && (!RecordingService.isRecording() || !quickExistingEntry.equals(capture.entryId))) {
+            cancelQuickCapture();
+            toast("That recording has finished. Use Record now to start another.");
+            return;
+        }
+        if (RecordingService.isBusy() && (!RecordingService.isRecording()
+                || !java.util.Objects.equals(capture.projectUri, quickProject))) {
+            cancelQuickCapture();
+            toast("Finish the current recording first.");
+            return;
+        }
+        if (quickMode == QUICK_FLOATING) {
+            if (!android.provider.Settings.canDrawOverlays(this)) {
+                overlayPermissionRequest = true;
+                try {
+                    startActivityForResult(new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:" + getPackageName())), PICK_OVERLAY);
+                } catch (RuntimeException unavailable) {
+                    cancelQuickCapture();
+                    toast("Enable Display over other apps for Fieldnote in Android settings.");
+                }
+                return;
+            }
+            List<String> needed = new ArrayList<>();
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) needed.add(Manifest.permission.RECORD_AUDIO);
+            if (getPackageManager().hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
+                    && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) needed.add(Manifest.permission.CAMERA);
+            addFirstLocationPermission(needed);
+            if (!needed.isEmpty()) {
+                if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) needed.add(Manifest.permission.POST_NOTIFICATIONS);
+                permissionRequest = quickPermission = true;
+                requestPermissions(needed.toArray(new String[0]), PERMISSION_FLOATING);
+                return;
+            }
+            Uri destination = quickProject;
+            cancelQuickCapture();
+            if (inlineCamera != null) inlineCamera.releaseHardware();
+            if (FloatingRecorderService.show(this, destination)) moveTaskToBack(true);
+            return;
+        }
+        if (RecordingService.isRecording()) {
+            cancelQuickCapture();
+            updateRecording();
+            return;
+        }
+        if (!canRecord()) {
+            if (permissionRequest) quickPermission = true;
+            else cancelQuickCapture();
+            return;
+        }
+        Uri destination = quickProject;
+        cancelQuickCapture();
+        nextEntryId = null;
+        updateAttachmentNotice();
+        stopPlayers();
+        RecordingService.start(this, destination, UUID.randomUUID().toString());
+        RecordingService.lock(this);
+        updateRecording();
     }
 
     private void palette() {
@@ -762,6 +927,8 @@ public class MainActivity extends Activity {
 
     private boolean captureReady() {
         if (permissionRequest) return false;
+        if (quickResolving) { toast("Opening the latest project…"); return false; }
+        if (FloatingRecorderService.isShowing() && quickMode != QUICK_RECORD) { toast("Use the floating mic, or close it from its notification."); return false; }
         if (projectOperation || (projectLoading && project == null)) { toast("Opening project…"); return false; }
         if (projectUri == null || project == null) { newProjectDialog(); return false; }
         return true;
@@ -1110,6 +1277,17 @@ public class MainActivity extends Activity {
         recordButton.home();
         gestureGuide.finish();
         MetadataCollector.start(this);
+        if ((requestCode == PERMISSION_MIC || requestCode == PERMISSION_FLOATING) && quickPermission) {
+            quickPermission = false;
+            boolean microphone = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+            boolean camera = requestCode != PERMISSION_FLOATING || !getPackageManager().hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
+                    || checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+            if (!microphone || !camera) {
+                cancelQuickCapture();
+                toast(!microphone ? "Microphone permission is needed to record audio." : "Camera permission is needed for the floating mic’s media gestures.");
+            } else main.post(this::continueQuickCapture);
+            return;
+        }
         if (requestCode == PERMISSION_MIC) toast(checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED ? "Microphone ready. Hold the button to record." : "Microphone permission is needed to record audio.");
         else if (requestCode == PERMISSION_CAMERA) {
             if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -1125,7 +1303,9 @@ public class MainActivity extends Activity {
     }
 
     private void refreshProject() {
-        if (destroyed || projectOperation) return;
+        // Keep ordinary archive reads out of the entire quick-start handoff,
+        // including the interval after cached resolution but before focus/permission.
+        if (destroyed || projectOperation || quickMode != QUICK_NONE) return;
         long generation = ++refreshGeneration;
         Uri requested = projectUri;
         if (requested == null) { projectLoading = false; project = null; renderEntries(); return; }
@@ -1162,11 +1342,13 @@ public class MainActivity extends Activity {
                         project = loaded;
                         renderEntries();
                         continueEditors();
+                        continueQuickCapture();
                     }
                 });
             } catch (Exception error) {
                 main.post(() -> { if (!destroyed && generation == refreshGeneration) {
                     projectLoading = false;
+                    cancelQuickCapture();
                     // Keep the last verified local view usable while a background provider
                     // failure is retried; the queue still reports that the ZIP is pending.
                     renderEntries();
@@ -1682,6 +1864,14 @@ public class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == PICK_OVERLAY) {
+            overlayPermissionRequest = false;
+            if (!android.provider.Settings.canDrawOverlays(this)) {
+                cancelQuickCapture();
+                toast("Floating mic needs Display over other apps permission.");
+            } else main.post(this::continueQuickCapture);
+            return;
+        }
         if (result != RESULT_OK || data == null || data.getData() == null) return;
         if (request != PICK_CREATE && request != PICK_DEFAULT && request != PICK_IMPORT
                 && request != PICK_LEGACY && request != PICK_MIGRATION_DESTINATION) return;
@@ -1810,6 +2000,16 @@ public class MainActivity extends Activity {
         addAction(content, "Open project ZIP", () -> chooseFolder(PICK_IMPORT));
         addAction(content, "Import an old project folder", () -> chooseFolder(PICK_LEGACY));
         addAction(content, "Retry pending saves", this::retryPending);
+        addAction(content, "Add Record now shortcut", () -> localIo.execute(() -> {
+            boolean accepted = RecordingShortcuts.requestPin(this);
+            main.post(() -> { if (!destroyed) toast(accepted ? "Confirm the shortcut in your launcher." : "Long-press the Fieldnote app icon to find Record now."); });
+        }));
+        addAction(content, "Add floating mic widget", () -> localIo.execute(() -> {
+            boolean accepted = RecordingWidget.requestPin(this);
+            main.post(() -> { if (!destroyed) toast(accepted ? "Confirm the widget in your launcher." : "Add Floating mic from your launcher’s widget picker."); });
+        }));
+        addAction(content, "Show floating mic", () -> acceptQuickIntent(RecordingShortcuts.overlayIntent(this)));
+        content.addView(text("Home-screen capture uses your last-created project. The floating mic needs Android’s Display over other apps permission.", 12, muted));
         TextView version = text(getString(R.string.app_version_label), 12, muted);
         version.setPadding(0, dp(20), 0, dp(12));
         content.addView(version);
@@ -2018,8 +2218,9 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
-        refreshProject();
+        if (quickMode == QUICK_NONE) refreshProject();
         updateMotionControls();
+        continueQuickCapture();
     }
 
     @Override protected void onPause() {
@@ -2042,10 +2243,12 @@ public class MainActivity extends Activity {
             gestureGuide.finish();
         }
         updateMotionControls();
+        if (hasFocus) continueQuickCapture();
     }
 
     @Override protected void onStop() {
         visible = false;
+        if (!isChangingConfigurations() && !permissionRequest && !overlayPermissionRequest) cancelQuickCapture();
         if (motionControls != null) { motionControls.cancelTraining(); motionControls.stop(); }
         renderPage();
         clearPendingPhotos();
@@ -2082,10 +2285,16 @@ public class MainActivity extends Activity {
         if (inlineCamera != null) inlineCamera.close();
         io.shutdown();
         localIo.shutdown();
+        quickIo.shutdownNow();
         super.onDestroy();
     }
 
     @Override protected void onSaveInstanceState(Bundle out) {
+        out.putInt("quickMode", quickMode);
+        out.putBoolean("quickPermission", quickPermission);
+        out.putBoolean("overlayPermissionRequest", overlayPermissionRequest);
+        if (quickProject != null) out.putString("quickProject", quickProject.toString());
+        out.putString("quickExistingEntry", quickExistingEntry);
         out.putString("pendingName", pendingName); out.putString("nextEntryId", nextEntryId);
         out.putString("pendingCameraMode", pendingCameraMode); out.putString("pendingCameraEntry", pendingCameraEntry);
         out.putInt("pageTab", activeTab);
@@ -2174,141 +2383,19 @@ public class MainActivity extends Activity {
         }
     }
 
-    private final class RecordView extends View {
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF drawingRect = new RectF();
-        private final Shader idleGradient = new LinearGradient(-.65f, -1f, .7f, 1f,
-                dark ? new int[]{0xff3865a5, 0xff204e87, 0xff122f56}
-                        : new int[]{0xff639aeb, 0xff3679d5, 0xff2358a4}, null, Shader.TileMode.CLAMP);
-        private final Shader recordingGradient = new LinearGradient(-.65f, -1f, .7f, 1f,
-                new int[]{0xff65a0ff, 0xff3e75ff, 0xff294dce}, null, Shader.TileMode.CLAMP);
-        private final Shader haloGradient = new RadialGradient(0, 0, 1,
-                new int[]{Color.TRANSPARENT, accent, Color.TRANSPARENT}, new float[]{.73f, .88f, 1f}, Shader.TileMode.CLAMP);
-        boolean recording, locked;
-        private long pressStartedAt;
-        RecordView(Context context) { super(context); paint.setStrokeCap(Paint.Cap.ROUND); }
-        void press(boolean pressed) {
-            if (pressed && !isPressed()) pressStartedAt = android.os.SystemClock.uptimeMillis();
-            animate().cancel();
-            if (pressed) { setTranslationX(0); setTranslationY(0); }
-            setPressed(pressed);
-            if (ValueAnimator.areAnimatorsEnabled()) {
-                animate().scaleX(pressed ? .84f : 1f).scaleY(pressed ? .84f : 1f)
-                        .setInterpolator(new PathInterpolator(.2f, 0f, .1f, 1f))
-                        .setDuration(pressed ? 110 : 220).setUpdateListener(value -> invalidate()).start();
-            } else { setScaleX(pressed ? .84f : 1f); setScaleY(pressed ? .84f : 1f); }
-            invalidate();
+    private final class RecordView extends MicrophoneView {
+        RecordView(Context context) {
+            super(context, MainActivity.this.dark, MainActivity.this.panel,
+                    MainActivity.this.accent, MainActivity.this.recordingColor, new MicrophoneView.ActionListener() {
+                        @Override public void onPhoto() { MainActivity.this.microphoneAction("photo"); }
+                        @Override public void onVideo() { MainActivity.this.microphoneAction("video"); }
+                        @Override public void onText() { MainActivity.this.microphoneAction("text"); }
+                        @Override public void onMarker() {
+                            if (RecordingService.isRecording()) MainActivity.this.addGestureMarker();
+                            else MainActivity.this.toast("Start recording before adding an audio marker.");
+                        }
+                    });
         }
-        void follow(float dx, float dy) {
-            if (!isPressed()) return;
-            setTranslationX(dx);
-            setTranslationY(dy);
-            invalidate();
-        }
-        void home() {
-            setPressed(false);
-            animate().cancel();
-            if (ValueAnimator.areAnimatorsEnabled()) {
-                animate().translationX(0).translationY(0).scaleX(1).scaleY(1)
-                        .setInterpolator(new PathInterpolator(.2f, 0f, .1f, 1f))
-                        .setDuration(230).setUpdateListener(value -> invalidate()).start();
-            } else { setTranslationX(0); setTranslationY(0); setScaleX(1); setScaleY(1); }
-            invalidate();
-        }
-        @Override protected void onDetachedFromWindow() {
-            animate().setUpdateListener(null).cancel();
-            super.onDetachedFromWindow();
-        }
-        @Override protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas);
-            float cx = getWidth() / 2f, cy = getHeight() / 2f;
-            float distance = (float) Math.hypot(getTranslationX(), getTranslationY());
-            float compact = Math.max(0f, Math.min(1f, (distance - dp(20)) / dp(80)));
-            compact = compact * compact * (3f - 2f * compact);
-            // Only the artwork morphs. The view, finger tracking, fixed origin and
-            // activation distances retain their existing gesture contract.
-            float compactRadius = Math.max(dp(24), Math.min(dp(44),
-                    (getResources().getDisplayMetrics().widthPixels - dp(40)) / 2f
-                            - dp(RecordingGesture.ACTIVATION_DISTANCE_DP) - dp(4)));
-            float restRadius = Math.min(cx, cy) - dp(16);
-            float radius = restRadius + (compactRadius - restRadius) * compact;
-            float pulse = .5f;
-            if (isPressed()) {
-                long elapsed = android.os.SystemClock.uptimeMillis() - pressStartedAt;
-                boolean animate = ValueAnimator.areAnimatorsEnabled();
-                pulse = animate ? .5f + .5f * (float) Math.sin(elapsed * .005) : .5f;
-                // Add a small visual tremor to the dragged view. The gesture origin
-                // and guide remain anchored to its original layout center.
-                if (animate) {
-                    float density = getResources().getDisplayMetrics().density;
-                    cx += (float) Math.sin(elapsed * .045) * density * .65f;
-                    cy += (float) Math.sin(elapsed * .053) * density * .45f;
-                    postInvalidateOnAnimation();
-                }
-            }
-            paint.setStyle(Paint.Style.FILL);
-            canvas.save();
-            canvas.translate(cx, cy);
-            float haloRadius = radius + dp(isPressed() ? 15 : 11);
-            canvas.scale(haloRadius, haloRadius);
-            paint.setShader(haloGradient);
-            paint.setAlpha(isPressed() ? Math.round(52 + 28 * pulse) : dark ? 23 : 14);
-            canvas.drawCircle(0, 0, 1, paint);
-            canvas.restore();
-            paint.setAlpha(255);
-            paint.setShader(null);
-            if (locked && recording) {
-                paint.setColor(panel);
-                canvas.drawCircle(cx, cy, radius, paint);
-            } else {
-                canvas.save();
-                canvas.translate(cx, cy);
-                canvas.scale(radius, radius);
-                paint.setShader(recording ? recordingGradient : idleGradient);
-                canvas.drawCircle(0, 0, 1, paint);
-                canvas.restore();
-                paint.setShader(null);
-            }
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setColor(locked && recording ? recordingColor : dark ? 0x785e92d9 : 0x805c8dcd);
-            paint.setStrokeWidth(dp(locked && recording ? 5 : 1));
-            canvas.drawCircle(cx, cy, radius + dp(3), paint);
-            paint.setColor(locked && recording ? accent : 0x24ffffff);
-            paint.setStrokeWidth(dp(1));
-            canvas.drawCircle(cx, cy, radius - dp(2), paint);
-            paint.setColor(locked && recording ? accent : Color.WHITE);
-            canvas.save();
-            float iconScale = 2.2f - compact;
-            canvas.scale(iconScale, iconScale, cx, cy);
-                paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(dp(locked && recording ? 2.8f : 2.2f));
-                drawingRect.set(cx - dp(6), cy - dp(17), cx + dp(6), cy + dp(5));
-                canvas.drawRoundRect(drawingRect, dp(7), dp(7), paint);
-                drawingRect.set(cx - dp(12), cy - dp(10), cx + dp(12), cy + dp(12));
-                canvas.drawArc(drawingRect, 0, 180, false, paint);
-                canvas.drawLine(cx, cy + dp(12), cx, cy + dp(21), paint);
-                canvas.drawLine(cx - dp(7), cy + dp(21), cx + dp(7), cy + dp(21), paint);
-                paint.setStyle(Paint.Style.FILL);
-            canvas.restore();
-        }
-        @Override public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
-            super.onInitializeAccessibilityNodeInfo(info);
-            info.addAction(new AccessibilityNodeInfo.AccessibilityAction(R.id.mic_photo_action, "Take photo"));
-            info.addAction(new AccessibilityNodeInfo.AccessibilityAction(R.id.mic_video_action, "Record video"));
-            info.addAction(new AccessibilityNodeInfo.AccessibilityAction(R.id.mic_text_action, "Write text note"));
-            info.addAction(new AccessibilityNodeInfo.AccessibilityAction(R.id.mic_marker_action, "Add audio marker"));
-        }
-        @Override public boolean performAccessibilityAction(int action, Bundle args) {
-            if (action == R.id.mic_photo_action) { microphoneAction("photo"); return true; }
-            if (action == R.id.mic_video_action) { microphoneAction("video"); return true; }
-            if (action == R.id.mic_text_action) { microphoneAction("text"); return true; }
-            if (action == R.id.mic_marker_action) {
-                if (RecordingService.isRecording()) addGestureMarker();
-                else toast("Start recording before adding an audio marker.");
-                return true;
-            }
-            return super.performAccessibilityAction(action, args);
-        }
-        @Override public boolean performClick() { super.performClick(); return true; }
-        @Override public CharSequence getAccessibilityClassName() { return Button.class.getName(); }
+        @Override public boolean performClick() { return super.performClick(); }
     }
 }

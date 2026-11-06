@@ -8,6 +8,9 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -23,6 +26,13 @@
         </activity>
         <activity android:name=".CameraActivity" android:exported="false" android:screenOrientation="portrait" />
         <service android:name=".RecordingService" android:exported="false" android:foregroundServiceType="microphone" android:stopWithTask="false" />
+        <service android:name=".FloatingRecorderService" android:exported="false" android:foregroundServiceType="specialUse|camera|microphone" android:stopWithTask="false">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-enabled floating multimedia recorder controls" />
+        </service>
+        <receiver android:name=".RecordingWidget" android:exported="false" android:label="Floating mic" android:icon="@drawable/ic_shortcut_record">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/recording_widget_info" />
+        </receiver>
         <service android:name=".ProjectPublisher" android:exported="true" android:permission="android.permission.BIND_JOB_SERVICE" />
         <provider android:name=".ArchiveMediaProvider" android:authorities="${applicationId}.media" android:exported="false" android:grantUriPermissions="true" />
     </application>

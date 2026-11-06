@@ -7,6 +7,8 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.provider.DocumentsContract;
 import android.util.AtomicFile;
+import android.util.JsonReader;
+import android.util.JsonToken;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -20,6 +22,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.io.OutputStream;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -54,6 +57,7 @@ public final class ProjectStore {
     private static final String INDEX = "index.json";
     private static final String BACKUP = "index.backup.json";
     private static final String PENDING_INDEX = "index.pending.json";
+    private static final String LAST_CREATED_PROJECT = "last-created-project";
     private static final int JSON_LIMIT = 32 * 1024 * 1024;
     private static final DateTimeFormatter FILE_STAMP = DateTimeFormatter
             .ofPattern("yyyyMMdd'T'HHmmss.SSS'Z'", Locale.US).withZone(ZoneOffset.UTC);
@@ -99,6 +103,7 @@ public final class ProjectStore {
                 }, "create");
                 rememberProject(archive);
                 setCurrentProject(archive);
+                synchronized (PREF_LOCK) { setPreferenceUri(LAST_CREATED_PROJECT, archive); }
                 return archive;
             } catch (JSONException failure) { throw problem("Could not create the project ZIP", failure); }
         }
@@ -227,6 +232,75 @@ public final class ProjectStore {
 
     public Uri currentProject() {
         synchronized (PREF_LOCK) { return preferenceUri("current-project"); }
+    }
+
+    /**
+     * Quick capture targets the last successful creation, independently of selection.
+     * A stored URI is returned even while inaccessible. Older installations without
+     * this preference require read-only provider I/O, so call this off the UI thread.
+     * An empty bookmark list returns null; an indeterminate latest project is an error.
+     */
+    public Uri lastCreatedProject() throws IOException {
+        synchronized (PREF_LOCK) {
+            Uri stored = persistedLastCreatedProject();
+            if (stored != null) return stored;
+        }
+        synchronized (LOCK) {
+            List<Uri> bookmarked = new ArrayList<>();
+            try {
+                synchronized (PREF_LOCK) {
+                    // Creation may have completed while this fallback waited for I/O.
+                    Uri stored = persistedLastCreatedProject();
+                    if (stored != null) return stored;
+                    try (JsonReader saved = new JsonReader(new StringReader(preferences.getString("projects", "[]")))) {
+                        saved.setLenient(false);
+                        saved.beginArray();
+                        Set<String> seen = new HashSet<>();
+                        while (saved.hasNext()) {
+                            if (saved.peek() != JsonToken.STRING) throw new IOException("A saved project location is invalid.");
+                            String value = saved.nextString();
+                            if (value.trim().isEmpty()) throw new IOException("A saved project location is invalid.");
+                            if (seen.add(value)) bookmarked.add(Uri.parse(value));
+                        }
+                        saved.endArray();
+                        if (saved.peek() != JsonToken.END_DOCUMENT) throw new IOException("The saved project list has trailing content.");
+                    }
+                }
+                Uri latest = null;
+                Instant latestTime = null;
+                for (Uri project : bookmarked) {
+                    Instant createdAt = projectCreationTime(project);
+                    if (latest == null || createdAt.isAfter(latestTime)
+                            || (createdAt.equals(latestTime) && project.toString().compareTo(latest.toString()) < 0)) {
+                        latest = project;
+                        latestTime = createdAt;
+                    }
+                }
+                return latest;
+            } catch (IOException | JSONException | RuntimeException failure) {
+                throw problem("The latest created project could not be determined. Restore access to saved projects or create a new project before quick capture", failure);
+            }
+        }
+    }
+
+    /** Caller holds PREF_LOCK. An unusable stored value must not enable fallback. */
+    private Uri persistedLastCreatedProject() throws IOException {
+        try {
+            if (!preferences.contains(LAST_CREATED_PROJECT)) return null;
+            Uri stored = preferenceUri(LAST_CREATED_PROJECT);
+            if (stored == null) throw new IOException("The last created project location is missing.");
+            return stored;
+        } catch (RuntimeException failure) {
+            throw problem("The last created project location could not be read", failure);
+        }
+    }
+
+    /** Caller holds LOCK. Discovery must never repair or rewrite a bookmarked project. */
+    private Instant projectCreationTime(Uri project) throws IOException, JSONException {
+        if (!isArchive(project)) return Instant.parse(readLegacyProject(project).getString("createdAt"));
+        ProjectArchive.Verified archive = readArchive(project, false);
+        try { return Instant.parse(archive.index.getString("createdAt")); }
+        finally { deleteWorkFile(archive.file); }
     }
 
     public void setCurrentProject(Uri projectUri) {

@@ -99,6 +99,7 @@ public final class NativeCaptureInstrumentedTest {
         assertFalse("Test must not take over an existing recording", RecordingService.isBusy());
         bookmarks = context.getSharedPreferences("fieldnote-folders", Context.MODE_PRIVATE);
         preferences = context.getSharedPreferences("fieldnote", Context.MODE_PRIVATE);
+        RecordingShortcuts.recordIntent(context); // Keep launcher authentication stable across fixture restores.
         priorBookmarks = bookmarks.getAll();
         priorPreferences = preferences.getAll();
         assertTrue(preferences.edit().remove("dark_mode").remove("metadata_enabled").commit());
@@ -3235,7 +3236,7 @@ public final class NativeCaptureInstrumentedTest {
     }
 
     private void saveScreenshot(String name) throws IOException {
-        name = "beta15-final-" + name;
+        name = "beta16-final-" + name;
         awaitScreenshotMainTurn();
         // Held feedback intentionally keeps drawing. A fully idle UI is neither required
         // nor a bounded condition here. Behavior is established by each test's assertions;

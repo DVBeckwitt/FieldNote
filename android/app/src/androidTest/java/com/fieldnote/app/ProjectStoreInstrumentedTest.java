@@ -90,6 +90,126 @@ public final class ProjectStoreInstrumentedTest {
         if (fixtureRoot != null) deleteFixtureTree(fixtureRoot);
     }
 
+    @Test public void latestCreatedProjectPersistsIndependentlyOfSelectionOpeningAndImport() throws Exception {
+        assertTrue(bookmarks.edit().clear().commit());
+        Uri first = createProject("Created first");
+        Uri latest = createProject("Created latest");
+        store.setCurrentProject(first);
+        assertEquals(latest, store.lastCreatedProject());
+
+        Uri opened = writeEmptyProjectArchive("Opened newer elsewhere.zip", "2099-01-01T00:00:00Z");
+        store.readProject(opened);
+        store.rememberProject(opened);
+        store.setCurrentProject(opened);
+        assertEquals(latest, store.lastCreatedProject());
+
+        File legacy = new File(fixtureRoot, "Imported legacy");
+        assertTrue(legacy.mkdir());
+        byte[] source = emptyIndex("Imported legacy").put("createdAt", "2100-01-01T00:00:00Z")
+                .toString().getBytes(StandardCharsets.UTF_8);
+        writeFile(new File(legacy, "index.json"), source);
+        Uri legacyTree = DocumentsContract.buildTreeDocumentUri(TestDocumentsProvider.AUTHORITY,
+                "root:" + fixtureRoot.getName() + "/" + legacy.getName());
+        Uri imported = store.importLegacyProject(legacyTree, fixtureTree);
+        ownedArchives.add(imported);
+        assertEquals(imported, store.currentProject());
+        assertEquals(latest, store.lastCreatedProject());
+        assertEquals(latest, new ProjectStore(context).lastCreatedProject());
+        assertEquals(latest.toString(), bookmarks.getString("last-created-project", null));
+        assertArrayEquals(source, readFile(new File(legacy, "index.json")));
+    }
+
+    @Test public void failedCreationDoesNotChangeLatestCreatedProject() throws Exception {
+        assertTrue(bookmarks.edit().clear().commit());
+        Uri latest = createProject("Successful creation");
+        Uri failed = DocumentsContract.buildDocumentUriUsingTree(fixtureTree,
+                "root:" + fixtureRoot.getName() + "/Failed creation.zip");
+        ownedArchives.add(failed);
+        TestDocumentsProvider.failNextZipWriteAfterTruncate();
+        try {
+            store.createProject(fixtureTree, "Failed creation");
+            fail("The fixture must fail before project creation completes");
+        } catch (IOException expected) {
+            assertEquals(latest, store.lastCreatedProject());
+            assertEquals(latest, new ProjectStore(context).lastCreatedProject());
+            assertEquals(latest, store.currentProject());
+        }
+    }
+
+    @Test public void unavailableLatestCreatedProjectNeverFallsBackToAnOlderProject() throws Exception {
+        assertTrue(bookmarks.edit().clear().commit());
+        Uri older = createProject("Accessible older project");
+        Uri latest = createProject("Unavailable latest project");
+        store.setCurrentProject(older);
+        TestDocumentsProvider.failZipReads(latest, 1);
+        assertEquals(latest, new ProjectStore(context).lastCreatedProject());
+        try {
+            store.readProject(latest);
+            fail("Latest-project lookup must not consume provider access failures");
+        } catch (IOException expected) { assertNotNull(expected.getMessage()); }
+        assertTrue(new File(fixtureRoot, "Unavailable latest project.zip").delete());
+        assertEquals(latest, store.lastCreatedProject());
+        assertEquals(older, store.currentProject());
+    }
+
+    @Test public void upgradeLatestProjectUsesCreationTimeAndDeterministicTiesWithoutChangingPreferences() throws Exception {
+        assertTrue(bookmarks.edit().clear().commit());
+        Uri older = writeEmptyProjectArchive("A earlier.zip", "2026-11-05T15:00:00.000000001Z");
+        Uri later = writeEmptyProjectArchive("Z later.zip", "2026-11-05T15:00:00.000000002Z");
+        store.rememberProject(later);
+        store.setCurrentProject(older);
+        byte[] olderBytes = bytes(older), laterBytes = bytes(later);
+        assertEquals("Submillisecond differences are creation order, not URI ties", later, store.lastCreatedProject());
+        Uri tied = writeEmptyProjectArchive("B same time.zip", "2026-11-05T15:00:00.000000002Z");
+        store.rememberProject(tied);
+        assertEquals(tied, store.lastCreatedProject());
+        assertEquals(tied, new ProjectStore(context).lastCreatedProject());
+        assertEquals(older, store.currentProject());
+        assertFalse("Only successful creation writes the explicit latest-project preference", bookmarks.contains("last-created-project"));
+        assertArrayEquals(olderBytes, bytes(older));
+        assertArrayEquals(laterBytes, bytes(later));
+    }
+
+    @Test public void upgradeLatestProjectRejectsIndeterminateBookmarksAndReturnsNullOnlyWhenEmpty() throws Exception {
+        assertTrue(bookmarks.edit().clear().commit());
+        assertNull(store.lastCreatedProject());
+        for (String invalid : new String[]{"not JSON", "[null]", "[42]", "[\"\"]", "[] garbage", "[] {}"}) {
+            assertTrue(bookmarks.edit().putString("projects", invalid).commit());
+            try { store.lastCreatedProject(); fail("Malformed bookmark inventory cannot mean there are no projects"); }
+            catch (IOException expected) { assertNotNull(expected.getMessage()); }
+        }
+        assertTrue(bookmarks.edit().clear().commit());
+        Uri older = writeEmptyProjectArchive("Known older.zip", "2025-01-01T00:00:00Z");
+        Uri unknown = writeEmptyProjectArchive("Unavailable bookmark.zip", "2026-01-01T00:00:00Z");
+        store.setCurrentProject(older);
+        store.rememberProject(unknown);
+        TestDocumentsProvider.failZipReads(unknown, 1);
+        byte[] before = bytes(older);
+        try { store.lastCreatedProject(); fail("An unreadable bookmark could be newer; do not guess an older target"); }
+        catch (IOException expected) { assertTrue(expected.getMessage().contains("could not be determined")); }
+        assertEquals(older, store.currentProject());
+        assertFalse(bookmarks.contains("last-created-project"));
+        assertArrayEquals(before, bytes(older));
+    }
+
+    @Test public void upgradeLatestProjectDiscoveryNeverRepairsAnUnreadableArchive() throws Exception {
+        assertTrue(bookmarks.edit().clear().commit());
+        Uri project = createProject("Discovery must not recover");
+        File pending = prepareFailedAudioPublication(project, Instant.parse("2026-11-05T15:00:00Z").toEpochMilli(),
+                "Retained pending audio fixture".getBytes(StandardCharsets.UTF_8));
+        byte[] original = readFile(pending);
+        byte[] broken = "Externally unreadable ZIP while a private backup exists".getBytes(StandardCharsets.UTF_8);
+        File canonical = new File(fixtureRoot, "Discovery must not recover.zip");
+        writeFile(canonical, broken);
+        assertTrue(bookmarks.edit().remove("last-created-project").commit());
+        try { store.lastCreatedProject(); fail("Discovery must not repair a bookmarked source to determine its creation time"); }
+        catch (IOException expected) { assertNotNull(expected.getMessage()); }
+        assertArrayEquals(broken, readFile(canonical));
+        assertArrayEquals(original, readFile(pending));
+        assertEquals(project, store.currentProject());
+        assertFalse(bookmarks.contains("last-created-project"));
+    }
+
     @Test public void attachmentsPreserveOriginalTimesAndBytes() throws Exception {
         Uri project = createProject("Linked originals");
         long photoAt = Instant.parse("2026-11-05T15:10:00Z").toEpochMilli();
@@ -1034,6 +1154,12 @@ public final class ProjectStoreInstrumentedTest {
                 .put("id", UUID.randomUUID().toString()).put("name", name)
                 .put("createdAt", "2026-11-05T15:00:00Z").put("revision", 0)
                 .put("entries", new JSONArray());
+    }
+
+    private Uri writeEmptyProjectArchive(String name, String createdAt) throws Exception {
+        Map<String, byte[]> members = new LinkedHashMap<>();
+        members.put("index.json", emptyIndex(name).put("createdAt", createdAt).toString().getBytes(StandardCharsets.UTF_8));
+        return writeArchive(name, zip(members));
     }
 
     private Uri writeIndexArchive(String name, JSONObject index, byte[] singleOriginal) throws Exception {

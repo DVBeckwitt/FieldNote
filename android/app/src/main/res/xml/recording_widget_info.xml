@@ -1,0 +1,8 @@
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="72dp" android:minHeight="72dp"
+    android:targetCellWidth="1" android:targetCellHeight="1"
+    android:initialLayout="@layout/widget_mic"
+    android:previewLayout="@layout/widget_mic"
+    android:previewImage="@drawable/ic_shortcut_record"
+    android:resizeMode="none" android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen" />

@@ -1,21 +1,22 @@
-# Fieldnote 0.2.0-beta.15
+# Fieldnote 0.2.0-beta.16
 
-Android beta (version code 16) for Android 8.0 and later.
+Android beta (version code 17) for Android 8.0 and later.
 No Google services are needed; no network permission is requested.
 Root access is neither needed nor used.
 
 ## Install
 
-Download the APK from the [beta 15 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.15).
+Download the APK from the [beta 16 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.16).
 Transfer it to the phone and open it from Files. If prompted, allow that
 installer source to install apps, then complete installation. This personal beta
 uses the local signing certificate; updates over earlier betas must use the same
 certificate. Keep the existing app installed to preserve its permissions,
 settings, and any pending captures.
 
-Beta 15 bounds project JSON complexity, prevents complexity failures from
-silently selecting an older legacy backup, updates the build wrapper, and adds
-explicit app-backup exclusions. Capture controls and the ZIP format remain.
+Beta 16 adds a **Record now** home-screen shortcut and a mic-only widget that
+opens a floating recorder over other apps. Both use your latest-created project,
+or keep the project and entry of an existing recording. The portable ZIP format
+and background saving remain unchanged.
 The [validation summary](../docs/VALIDATION.md) records the checks and their limits.
 See [Building Fieldnote](BUILDING.md) to build or test from source.
 
@@ -85,6 +86,58 @@ uses a smooth 180–260 ms settling animation after release.
 Standalone video includes embedded audio when microphone permission is available.
 Inline video during narration has no embedded audio: the voice stays in the
 separate linked `.m4a`. Both originals remain in the same entry.
+
+## Home-screen shortcut and floating microphone
+
+Create a project in Fieldnote first. Home-screen capture uses the **most recently
+created project**, which may differ from the project you last opened. If audio
+is already recording, it keeps that recording's project and entry instead of
+starting a duplicate. With no project available, Fieldnote asks you to create
+one and does not start recording.
+
+In **Settings**, choose:
+
+- **Add Record now shortcut** to request placement on your home screen. Confirm
+  it in your launcher. You can also long-press the Fieldnote app icon to find
+  **Record now** when your launcher supports app shortcuts.
+- **Add floating mic widget** for the single blue microphone button. Confirm
+  placement in your launcher; if pinning is unavailable, add **Floating mic**
+  from the launcher's widget picker.
+- **Show floating mic** to open the floating control directly, without adding
+  a home-screen item.
+
+Tapping **Record now** opens Fieldnote and starts locked, hands-free audio as
+soon as the project and microphone permission are ready. Tap the microphone
+to stop and save. It does not require holding the shortcut. An already-running
+recording keeps its existing lock state.
+
+Tapping the **Floating mic** widget opens the floating control without starting
+a new recording. On first use, allow **Display over other apps** (sometimes
+called **Draw over other apps**) in Android Settings, then grant microphone
+and camera access when requested. Camera access is required on phones with a
+camera so the floating media gestures can work. Root access is not needed.
+The app moves to the background, leaving the microphone over your other apps.
+Hold and swipe on this floating microphone; the home-screen widget itself is
+only the button that opens it.
+
+The floating mic uses the same touch actions: hold to record, release to save,
+up to lock, left for a linked photo, right for video, down for text, and diagonally
+upper-right for an audio marker. Return home to rearm repeated photos or markers.
+Leaving the Video zone stops video while narration continues; releasing a held
+capture ends its audio and video unless audio was explicitly locked. Text keeps
+audio running through typing; **Save** links the text and ends audio, while
+**Skip** ends audio without text. Quick gestures before audio starts can create
+standalone media or text. A small camera preview appears beside or above the mic.
+
+Use the **Fieldnote floating microphone** notification to close the control.
+**Hide** preserves explicitly locked narration, which has its own recording
+notification; it ends an unlocked hold, camera capture, or narration being used
+by the text editor. **Stop all** ends
+the floating session's audio and video and hides the control. Turning the screen
+off also hides the control; explicitly locked narration can continue. Finish
+any floating camera capture or text editor before switching capture surfaces.
+Phone-motion gestures currently work only on Record inside the main app, not
+in the floating overlay.
 
 ## Motion controls
 
@@ -219,7 +272,8 @@ Private playback caches and pending recovery data remain intentionally available
 Behavior across every manufacturer's backup/transfer implementation is unverified.
 
 **Settings** changes the default save location, optional metadata, motion controls,
-and dark navy/light-blue appearance. The launcher uses the prototype's fₙ mark.
+and dark navy/light-blue appearance, and offers the home-screen capture controls
+described above. The launcher uses the prototype's fₙ mark.
 Changing the default location does not move existing project ZIPs.
 
 For beta 1 projects, use **Settings → Import an old project folder**. Conversion
@@ -245,23 +299,16 @@ producing usable media.
 
 ## Validation limits
 
-Beta 15 passed release assembly, 86 JVM tests, and 76 native API 36 emulator tests
-(30 capture/UI, 21 storage, 9 JSON-security, 5 queue, 3 motion-settings, 3 entry-data,
-2 inline-camera, 2 security-configuration, and 1 guide test). All 162 tests had zero
-failures, errors, or skips. Lint reported 0 errors and 68 warnings; only the prior
-backup-rules warning was removed. The delivered APK matches the final build; its
-v2 signature, manifest, and backup resources were verified. The signed release
-denied an ungranted provider query and recording-service start from shell UID 2000.
-Dark/light Record and notes-filter screenshots were reviewed. See the
-[validation summary](../docs/VALIDATION.md).
-Emulator tests do not establish physical Pixel/GrapheneOS behavior; that
-device has not been tested. Motion trace tests and simulated callbacks do not
+Floating microphone recording and camera capture over the launcher have been
+exercised on an Android API 36 emulator. See the
+[validation summary](../docs/VALIDATION.md) for recorded build and test evidence.
+Emulator checks do not establish physical Pixel/GrapheneOS behavior; testing on
+that phone is still pending. Motion trace tests and simulated callbacks do not
 establish real-world gesture detection or sensitivity; physical haptic feel also
 remains untested. Hardware, permission revocation, storage-provider availability,
-and process interruption can affect
-capture and saving. Native UI tests use the debug variant; signed-release checks
-were limited to artifact inspection and the two access-denial probes. This pass
-did not include a signed-release UI/upgrade exercise or full URI grant/revoke
-testing. Android 8.0+ is supported by the minimum SDK declaration,
+launcher behavior, and process interruption can affect capture and saving.
+Some apps hide overlays on sensitive screens. Native UI tests use the debug
+variant; they do not establish signed-release behavior on every device.
+Android 8.0+ is supported by the minimum SDK declaration,
 not a claim of testing every Android version. There is currently no CI workflow;
 the recorded results are local validation.

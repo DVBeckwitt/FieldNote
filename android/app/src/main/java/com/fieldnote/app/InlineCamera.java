@@ -1,7 +1,6 @@
 package com.fieldnote.app;
 
 import android.Manifest;
-import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
@@ -35,6 +34,7 @@ import android.view.OrientationEventListener;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -69,7 +69,7 @@ public final class InlineCamera {
     public static final int STATUS_ID = 0x00f20002;
     public static final int STOP_VIDEO_ID = 0x00f20003;
 
-    private final Activity activity;
+    private final Context context;
     private final FrameLayout container;
     private final Listener listener;
     private final ProjectStore store;
@@ -93,23 +93,23 @@ public final class InlineCamera {
     private int pendingOpens;
     private boolean shutdownRequested;
 
-    public InlineCamera(Activity activity, FrameLayout container, Listener listener) {
-        this.activity = activity;
+    public InlineCamera(Context context, FrameLayout container, Listener listener) {
+        this.context = context;
         this.container = container;
         this.listener = listener;
-        store = new ProjectStore(activity);
+        store = new ProjectStore(context);
         thread.start();
         cameraHandler = new Handler(thread.getLooper());
         container.setBackgroundColor(Color.BLACK);
-        LinearLayout layout = new LinearLayout(activity);
+        LinearLayout layout = new LinearLayout(context);
         layout.setOrientation(LinearLayout.VERTICAL);
-        FrameLayout preview = new FrameLayout(activity);
-        texture = new PreviewTexture(activity);
+        FrameLayout preview = new FrameLayout(context);
+        texture = new PreviewTexture(context);
         texture.setId(PREVIEW_ID);
         texture.setContentDescription("Inline camera preview");
         preview.addView(texture, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
         layout.addView(preview, new LinearLayout.LayoutParams(-1, 0, 1));
-        status = new TextView(activity);
+        status = new TextView(context);
         status.setId(STATUS_ID);
         status.setTextColor(Color.WHITE);
         status.setTextSize(11);
@@ -117,7 +117,7 @@ public final class InlineCamera {
         status.setPadding(dp(4), dp(3), dp(4), dp(3));
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         layout.addView(status, new LinearLayout.LayoutParams(-1, -2));
-        stop = new Button(activity);
+        stop = new Button(context);
         stop.setId(STOP_VIDEO_ID);
         stop.setText("Stop video");
         stop.setContentDescription("Stop and save inline video");
@@ -131,7 +131,7 @@ public final class InlineCamera {
         layout.addView(stop, new LinearLayout.LayoutParams(-1, dp(48)));
         container.addView(layout, new FrameLayout.LayoutParams(-1, -1));
         container.setVisibility(View.GONE);
-        orientation = new OrientationEventListener(activity) {
+        orientation = new OrientationEventListener(context) {
             @Override public void onOrientationChanged(int value) { deviceOrientation = value; }
         };
         texture.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
@@ -163,7 +163,7 @@ public final class InlineCamera {
 
     private void begin(Uri projectUri, String entryId, boolean video) {
         if (closed || busy) return;
-        if (projectUri == null || activity.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+        if (projectUri == null || context.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             listener.onError("Choose a project and allow camera access first.");
             return;
         }
@@ -222,7 +222,7 @@ public final class InlineCamera {
         fail(job, "Video cancelled before recording started.", false);
     }
 
-    /** Called on Activity.onStop; valid captures still finish their durable local staging. */
+    /** Called when the host stops or removes its window; valid originals still finish local staging. */
     public void releaseHardware() {
         Job job = current;
         if (job != null) job.cancelled = true;
@@ -230,7 +230,7 @@ public final class InlineCamera {
         cameraHandler.post(() -> release(job));
     }
 
-    /** Permanent Activity cleanup; finalized originals finish staging, then the publisher owns them. */
+    /** Permanent host cleanup; finalized originals finish staging, then the publisher owns them. */
     public void close() {
         if (closed) return;
         closed = true;
@@ -252,7 +252,7 @@ public final class InlineCamera {
         if (!valid(job) || !job.storageReady || job.opening || camera != null || !texture.isAvailable()) return;
         job.opening = true;
         try {
-            CameraManager manager = activity.getSystemService(CameraManager.class);
+            CameraManager manager = context.getSystemService(CameraManager.class);
             String[] ids = manager.getCameraIdList();
             if (ids.length == 0) throw new IllegalStateException("No camera is available.");
             job.cameraId = ids[0];
@@ -271,7 +271,7 @@ public final class InlineCamera {
             job.previewSize = previewSize(map.getOutputSizes(SurfaceTexture.class), job.captureSize);
             put(job.metadata, "camera", cameraMetadata(job));
             ui(job, () -> transform(job));
-            if (activity.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
+            if (context.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
                 throw new SecurityException("Camera permission was removed.");
             job.openCallbackPending = true;
             pendingOpens++;
@@ -436,7 +436,7 @@ public final class InlineCamera {
             // camera startup must never turn that linked video into a new microphone recording.
             boolean narrationOwnsMicrophone = RecordingService.isBusy();
             job.embeddedAudio = !job.separateAudio && !narrationOwnsMicrophone
-                    && activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+                    && context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
             put(job.metadata, "audioTrack", job.embeddedAudio ? "embedded_microphone_audio"
                     : job.separateAudio ? "separate_linked_audio_recording"
                     : narrationOwnsMicrophone ? "none_microphone_owned_by_narration" : "none_microphone_permission_not_granted");
@@ -690,12 +690,16 @@ public final class InlineCamera {
     private int captureRotation(Job job) {
         if (deviceOrientation != OrientationEventListener.ORIENTATION_UNKNOWN)
             return CameraMath.deviceCaptureRotation(job.sensorOrientation, deviceOrientation, job.front);
-        return CameraMath.jpegRotation(job.sensorOrientation, activity.getWindowManager().getDefaultDisplay().getRotation() * 90, job.front);
+        return CameraMath.jpegRotation(job.sensorOrientation, displayRotation() * 90, job.front);
+    }
+
+    private int displayRotation() {
+        return context.getSystemService(WindowManager.class).getDefaultDisplay().getRotation();
     }
 
     private void transform(Job job) {
         if (job.previewSize == null || texture.getWidth() == 0 || texture.getHeight() == 0) return;
-        int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
+        int rotation = displayRotation();
         boolean swap = ((job.sensorOrientation - rotation * 90 + 360) % 180) != 0;
         texture.setAspectRatio(swap ? job.previewSize.getHeight() : job.previewSize.getWidth(),
                 swap ? job.previewSize.getWidth() : job.previewSize.getHeight());
@@ -715,7 +719,7 @@ public final class InlineCamera {
     }
 
     private void ui(Job job, Runnable action) { main.post(() -> { if (!closed && current == job) action.run(); }); }
-    private int dp(int value) { return Math.round(activity.getResources().getDisplayMetrics().density * value); }
+    private int dp(int value) { return Math.round(context.getResources().getDisplayMetrics().density * value); }
     private static String message(Exception error) { return error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage(); }
     private static void put(JSONObject object, String key, Object value) {
         try { object.put(key, value == null ? JSONObject.NULL : value); } catch (JSONException ignored) { }
@@ -768,7 +772,7 @@ public final class InlineCamera {
             this.entryId = entryId == null || entryId.isEmpty() ? UUID.randomUUID().toString() : entryId;
             this.video = video;
             separateAudio = RecordingService.isBusy();
-            metadata = MetadataCollector.snapshot(activity);
+            metadata = MetadataCollector.snapshot(context);
             put(metadata, "timeSource", "capture_request_wall_clock");
         }
     }

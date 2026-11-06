@@ -1,67 +1,72 @@
-# Beta 15 validation
+# Beta 16 validation
 
-Version **0.2.0-beta.15**, code **16**, was validated locally on 2026-11-05.
-The [GitHub release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.15)
-provides the APK. Package: `com.fieldnote.app`; artifact size: **208,152 bytes**.
+Version **0.2.0-beta.16**, code **17**, was validated locally on 2026-11-06.
+The [GitHub release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.16)
+provides the APK. Package: `com.fieldnote.app`; artifact size: **232,340 bytes**.
 
-SHA-256: `b4019211b4cd43f8605adac78355aae079d803340052adada20e3771d203e510`.
+SHA-256: `4640074478c6010a2c273b1d3b15c4f6f96618620601519cb8c633f43aafc311`.
 
 ## Build and tests
 
-Environment: Windows, JDK 21, Gradle 8.14.6, Android Gradle Plugin 8.6.0, and
-SDK 35. The final combined release/JVM/lint/native gate completed successfully
-in 3m 1s. See [build instructions](../android/BUILDING.md) for the commands.
+Environment: Windows, JDK 21, Gradle 8.14.6, Android Gradle Plugin 8.6.0,
+and SDK 35. The complete release/JVM/lint/native gate passed in 4m 22s.
+See [build instructions](../android/BUILDING.md) for the commands.
 
 | Check | Result |
 | --- | --- |
 | Release assembly | Passed |
 | JVM tests | 86 passed |
-| Native API 36 emulator tests | 76 passed |
-| Total | **162 passed; 0 failures, errors, or skips** |
-| Release lint | **0 errors, 68 warnings** |
+| Native API 36 emulator tests | 109 passed |
+| Android total | **195 passed; 0 failures, errors, or skips** |
+| Release lint | **0 errors, 76 warnings** |
+| Retained browser prototype | Syntax checks, 7 tests, and build passed with Node 24.22.1 |
 
-Native coverage includes capture/UI, project storage, JSON resource limits,
-publication queues, motion settings, note filtering, inline camera behavior,
-security configuration, and gesture guides. The new JSON cases reject excessive
-nesting/token counts and preserve source data, including legacy imports with an
-older backup. The explicit backup configuration removed the prior backup-rules
-lint warning; remaining warning IDs/messages were unchanged.
+New native coverage verifies authenticated launcher actions, last-created project
+selection, duplicate/replayed requests, real encoded audio, missing projects,
+background cancellation, and recording during blocked ZIP publication. A cold
+launch regression verifies that the first UI refresh cannot block cached quick
+capture while waiting for window focus.
 
-The delivered APK matches the final build byte for byte. Hash checks confirmed
-that the 58-file pre-change baseline remained intact and all 14 recorded final
-source files still matched the tested implementation. This records source
-provenance, not a claim of reproducible builds across machines.
+Overlay tests inject real touch gestures over the launcher while Main is stopped.
+They verify held audio, repeated linked photos, video-to-photo transitions, lock,
+markers, text submission, Hide cleanup, and standalone video with embedded audio.
+Original AAC/MP4/JPEG files are opened and decoded. Three draft tests verify that
+an older save cannot erase a newly reopened or edited text draft. Existing capture,
+storage, publication, motion, filtering, camera, and security tests also passed.
 
-Before publication, the incremental Android build/JVM/lint gate passed again
-with its implementation and APK hash unchanged. The retained browser prototype
-also passed syntax checks, all seven model tests, and its standalone build with
-Node 24.22.1. The system's older Node 16 lacks the required test runner.
+## APK and visual checks
 
-## Signed APK and UI checks
+APK Signature Scheme v2 verification passed with the same certificate as earlier
+betas. Packaged checks confirmed minimum API 26, target API 35, non-debuggable
+release, no INTERNET permission or test storage provider, private recorder services
+and widget receiver, and `BIND_JOB_SERVICE` protection for the publisher.
+The signed APK installed successfully. Shell UID 2000 was denied starts of both
+private recorder services; a forged shortcut action opened the app without
+starting its recording service. These are focused checks, not a full release-UI
+or upgrade exercise.
 
-APK Signature Scheme v2 verification passed with the same certificate as prior
-betas. Packaged checks confirmed version code/name, minimum API 26, target API 35,
-non-debuggable release, no INTERNET permission, no test storage provider, and
-`BIND_JOB_SERVICE` protection for the publisher. Backup resources contain nine
-legacy exclusions and 18 cloud/device-transfer exclusions.
-
-The final signed APK was installed on the test emulator. An ungranted provider
-query and a recording-service start from shell UID 2000 were both denied.
-These two probes do not cover the full URI grant/revoke lifecycle.
-
-Debug-variant screenshots of dark and light Record screens and notes search,
-tags, and markers were inspected; no layout regression was observed in those
-three screens.
+Actual emulator screenshots of dark/light Record screens, notes search/tags/markers,
+and the idle, held, and text-entry overlay were inspected. The text editor and
+keyboard were visible while audio remained active. The shared microphone retains its
+fixed origin and blue recording feedback. A screenshot-only settling delay was
+added for dialog review; all seven affected overlay tests passed again afterward,
+as did the separate retained-screenshot text test. These repeats are not counted
+as additional unique tests in the table.
 
 ## Limits
 
-Native UI tests used the debug variant on an Android 16 / API 36 emulator.
-Signed-release checks covered the artifact and two access-denial probes, not a
-full UI or upgrade exercise. Physical Pixel/GrapheneOS behavior, hand-motion
-sensitivity, and haptic feel remain untested. Results do not cover every Android
-version, storage provider, interruption, or manufacturer's backup/transfer mode.
+Native behavior tests use the debug variant on Android 16 / API 36 with an emulated
+camera and no host microphone audio. They do not establish physical Pixel/GrapheneOS
+behavior, launcher pin-confirmation UI, hand-motion sensitivity, or haptic feel.
+Actual OS permission-denial UI and every Android/storage-provider combination are
+not covered. The stale permission callback test verifies cancellation, not an OS
+denial. Lint retains 76 warnings, versus 68 in beta 15; none are suppressed to pass.
 
-Project ZIPs contain plaintext metadata and original media. No app-level
-encryption or exhaustive security assessment is claimed. There is currently no
-CI workflow; the results above are local validation. See the [beta guide](../android/BETA.md)
-for supported behavior, storage limits, and recovery guidance.
+The floating control requires Android's overlay permission and ordinary microphone/
+camera grants. Root is not used. Touch gestures work in the overlay; phone-motion
+gestures remain in the main app. The home-screen widget opens the overlay and does
+not itself receive custom drag gestures. See the [beta guide](../android/BETA.md).
+
+Project ZIPs contain plaintext original media and metadata. No app-level encryption
+or exhaustive security guarantee is claimed. There is currently no CI workflow;
+these are local validation results, with remote checks inventoried at publication.
