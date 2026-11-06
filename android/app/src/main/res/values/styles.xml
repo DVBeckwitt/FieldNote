@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="FieldnoteDark" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#91C5FF</item>
+        <item name="android:windowBackground">#0C1627</item>
+        <item name="android:navigationBarColor">#0C1627</item>
+        <item name="android:statusBarColor">#0C1627</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:alertDialogTheme">@style/FieldnoteDarkDialog</item>
+    </style>
+    <style name="FieldnoteLight" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#2C68B2</item>
+        <item name="android:windowBackground">#F7FAFF</item>
+        <item name="android:navigationBarColor">#F7FAFF</item>
+        <item name="android:statusBarColor">#F7FAFF</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:alertDialogTheme">@style/FieldnoteLightDialog</item>
+    </style>
+    <style name="FieldnoteDarkDialog" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#91C5FF</item>
+        <item name="android:textColorPrimary">#E8F1FF</item>
+        <item name="android:textColorSecondary">#ABC0DB</item>
+        <item name="android:windowBackground">@drawable/dialog_dark</item>
+        <item name="android:windowMinWidthMinor">92%</item>
+        <item name="android:windowMinWidthMajor">80%</item>
+        <item name="android:windowAnimationStyle">@style/FieldnoteDialogMotion</item>
+    </style>
+    <style name="FieldnoteLightDialog" parent="android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#2C68B2</item>
+        <item name="android:textColorPrimary">#17314D</item>
+        <item name="android:textColorSecondary">#536C87</item>
+        <item name="android:windowBackground">@drawable/dialog_light</item>
+        <item name="android:windowMinWidthMinor">92%</item>
+        <item name="android:windowMinWidthMajor">80%</item>
+        <item name="android:windowAnimationStyle">@style/FieldnoteDialogMotion</item>
+    </style>
+    <style name="FieldnoteDialogMotion">
+        <item name="android:windowEnterAnimation">@anim/dialog_enter</item>
+        <item name="android:windowExitAnimation">@anim/dialog_exit</item>
+    </style>
+</resources>

@@ -1,0 +1,12 @@
+{
+  "name": "fieldnote-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "build": "node build.mjs",
+    "check": "node --check prototype/app.js && node --check prototype/model.js && node --check server.mjs && node --check build.mjs",
+    "test": "node --test prototype/model.test.mjs"
+  }
+}

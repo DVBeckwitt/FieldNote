@@ -1,0 +1,7 @@
+.gradle/
+.test-avd/
+local.properties
+**/build/
+*.jks
+*.keystore
+captures/

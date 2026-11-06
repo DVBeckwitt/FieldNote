@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6f7f2">
+  <meta name="description" content="Fieldnote — an interactive concept for a project-based Android lab notebook.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%232e5144'/%3E%3Cpath d='M12 11h17M12 20h12M12 29h6' stroke='%23fff' stroke-width='3'/%3E%3C/svg%3E">
+  <title>Fieldnote · Lab notebook prototype</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="studio-header"><div class="wordmark"><span class="brand-symbol">f<span>n</span></span> Fieldnote <span class="wordmark-note">A LAB NOTEBOOK</span></div><span class="concept-tag"><span></span> INTERACTIVE CONCEPT 01</span></header>
+  <main class="stage">
+    <aside class="intro">
+      <span class="eyebrow">LESS FRICTION. MORE FIELDWORK.</span>
+      <h1>Stay with the<br><em>experiment.</em></h1>
+      <p>A thought, a photo, a moment.<br>Keep them together, exactly<br>when they happened.</p>
+      <div class="try-list"><span class="eyebrow">TAKE IT FOR A SPIN</span><button data-action="try-record"><span>01</span> Hold to capture a thought <span>↗</span></button><button data-action="try-link"><span>02</span> Add context to a photo <span>↗</span></button><button data-action="files"><span>03</span> Look inside your folder <span>↗</span></button></div>
+      <div class="concept-note"><span class="tiny-dot"></span><p>Android interaction study<br><strong>Simulated captures, real interactions.</strong></p></div>
+    </aside>
+    <section class="phone" aria-label="Fieldnote Android app prototype">
+      <div class="status-bar" aria-hidden="true"><span id="clock">9:41</span><span class="status-icons">▮▮▮ <svg viewBox="0 0 24 18"><path d="M2 5Q12-3 22 5M6 9q6-5 12 0M10 13q2-2 4 0" fill="none" stroke="currentColor" stroke-width="2.3"/></svg><svg viewBox="0 0 26 14"><rect x="1" y="1" width="21" height="12" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="3" y="3" width="16" height="8" rx="1" fill="currentColor"/><path d="M24 5v4" stroke="currentColor" stroke-width="2"/></svg></span></div>
+      <div class="app-top"><div class="app-brand"><span class="brand-symbol small">f<span>n</span></span> Fieldnote <span class="demo-tag">DEMO</span></div><button class="icon-button" data-action="settings" aria-label="Storage and metadata settings" data-icon="settings"></button></div>
+      <div class="project-heading"><span class="eyebrow">CURRENT PROJECT</span><button id="project-switch" data-action="projects"><span id="project-title">Thin-film deposition</span><span data-icon="chevron"></span></button><button class="storage-label" data-action="storage"><span data-icon="folder"></span><span id="storage-short">Documents / Fieldnote</span></button></div>
+      <section id="notebook-view" class="notebook-view">
+        <div class="capture-panel" id="capture-panel"><div class="capture-top"><span id="capture-status"><span class="ready-dot"></span> Ready when you are</span><span class="capture-counter" id="capture-counter">00:00</span></div><div class="record-row"><div class="record-copy"><h2 id="record-heading">Catch a thought.</h2><p id="record-help">Hold to record.<br>Release to keep it.</p></div><button id="record-button" class="record-button" aria-label="Hold to record an audio note" aria-describedby="record-help"><span data-icon="mic"></span><span class="record-ripple"></span></button></div><div class="capture-bottom"><span data-icon="check"></span><span id="save-hint">A separate file, every time.</span><span class="demo-capture">DEMO</span></div></div>
+        <div class="media-actions"><button data-action="photo"><span data-icon="camera"></span> Take photo</button><button data-action="video"><span data-icon="video"></span> Record video</button></div>
+        <div class="timeline-header"><h2>Notebook <span id="entry-count">3</span></h2><button id="sort-button" data-action="sort" aria-label="Change chronological sort order">Newest first <span data-icon="sort"></span></button></div>
+        <div class="timeline" id="timeline"></div>
+      </section>
+      <section id="files-view" class="files-view" hidden></section>
+      <nav class="app-nav" aria-label="Project views"><button class="active" id="nav-notebook" data-action="notebook"><span data-icon="notebook"></span> Notebook</button><button id="nav-files" data-action="files"><span data-icon="folder"></span> Project files</button></nav>
+      <div class="gesture-bar" aria-hidden="true"></div>
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    </section>
+    <aside class="folder-aside"><div class="folder-card"><div class="folder-card-head"><span data-icon="folder"></span><span class="eyebrow">YOUR PROJECT, UNDER THE HOOD</span><span class="live-label"><i></i> LIVE</span></div><h2>One folder.<br>The whole story.</h2><p>Original files. Individual timestamps.<br>Connections that travel with them.</p><div class="folder-tree" id="folder-tree"></div><button class="manifest-button" data-action="manifest">Inspect the metadata index <span>↗</span></button></div><div class="aside-footnote"><span data-icon="link"></span><p>A photo and its explanation stay linked.<br>Each keeps its own capture time.</p></div><div class="scope-note"><strong>A preview of the workflow</strong><br>Recording, sensors, and folder selection are simulated. No microphone or camera access.</div></aside>
+  </main>
+  <footer class="studio-footer"><span>FIELDNOTE / DESIGN PROTOTYPE</span><span>Made for the moments between measurements.</span><span>01 — CAPTURE & CONTEXT</span></footer>
+  <dialog id="sheet" aria-labelledby="sheet-title"><div class="sheet-handle" aria-hidden="true"></div><div class="sheet-header"><div><span class="eyebrow" id="sheet-kicker"></span><h2 id="sheet-title"></h2></div><button class="icon-button" id="close-sheet" aria-label="Close dialog" data-icon="close"></button></div><div id="sheet-content"></div></dialog>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

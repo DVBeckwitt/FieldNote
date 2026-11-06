@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Same-UID test fixture only. This source set is absent from release. -->
+        <provider
+            android:name=".TestDocumentsProvider"
+            android:authorities="com.fieldnote.app.testdocuments"
+            android:exported="false"
+            android:grantUriPermissions="false" />
+    </application>
+</manifest>

@@ -1,0 +1,14 @@
+android/.gradle/
+android/.build-tools/
+android/.test-avd/
+android/local.properties
+android/**/build/
+*.jks
+*.keystore
+
+# Local review evidence and APK history stay outside the source repository.
+# Published APKs are attached to GitHub Releases.
+/review/
+/releases/
+/prototype/preview.html
+/node_modules/

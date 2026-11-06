@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <permission android:name="com.fieldnote.app.INTERNAL" android:protectionLevel="signature" />
+    <uses-permission android:name="com.fieldnote.app.INTERNAL" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <application android:allowBackup="false" android:fullBackupContent="@xml/backup_rules" android:dataExtractionRules="@xml/data_extraction_rules" android:label="Fieldnote" android:theme="@style/FieldnoteDark" android:icon="@drawable/ic_launcher" android:roundIcon="@drawable/ic_launcher" android:supportsRtl="true">
+        <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="portrait" android:enableOnBackInvokedCallback="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".CameraActivity" android:exported="false" android:screenOrientation="portrait" />
+        <service android:name=".RecordingService" android:exported="false" android:foregroundServiceType="microphone" android:stopWithTask="false" />
+        <service android:name=".ProjectPublisher" android:exported="true" android:permission="android.permission.BIND_JOB_SERVICE" />
+        <provider android:name=".ArchiveMediaProvider" android:authorities="${applicationId}.media" android:exported="false" android:grantUriPermissions="true" />
+    </application>
+</manifest>
