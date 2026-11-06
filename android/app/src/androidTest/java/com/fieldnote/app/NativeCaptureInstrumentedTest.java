@@ -1381,6 +1381,139 @@ public final class NativeCaptureInstrumentedTest {
         assertRealJpeg(store.mediaUri(projectUri, photo.getString("path")));
     }
 
+    @Test public void recognizedShakeStopsHeldVideoAndLateFingerReleaseCannotRestartCapture() throws Exception {
+        assertTrue(preferences.edit().putBoolean("shake_recording_enabled", true).commit());
+        notebook = ActivityScenario.launch(MainActivity.class);
+        awaitNotebookReady();
+        awaitRecordWindowFocus(true);
+        onNotebook(this::beginRecordTouch);
+        await("held narration starts before its linked video", 15_000,
+                () -> recordingState(RecordingService.State.RECORDING) && RecordingService.snapshot().elapsedMs() >= 1000);
+        RecordingService.Snapshot started = RecordingService.snapshot();
+        ownedEntryId = started.entryId;
+        onNotebook(activity -> recordTouch.send(MotionEvent.ACTION_MOVE, 120, 0));
+        awaitInlineVideoRecording();
+        long videoReadyAt = RecordingService.snapshot().elapsedMs();
+        await("the linked video has time to encode real frames", 5_000,
+                () -> RecordingService.snapshot().elapsedMs() >= videoReadyAt + 1600);
+        assertHeldNarration(started);
+        long elapsedBeforeStop = RecordingService.snapshot().elapsedMs();
+        onNotebook(activity -> {
+            assertTrue(((InlineCamera) readField(activity, "inlineCamera")).isRecording());
+            invokeShakeCallback(activity);
+            assertFalse("Shake-stop owns and cancels the existing hold", (Boolean) readField(activity, "touching"));
+            assertFalse(activity.findViewById(R.id.record_button).isPressed());
+            assertFalse(((GestureGuideView) readField(activity, "gestureGuide")).isActive());
+        });
+        await("shake-stop finalizes both recording owners before finger release", 20_000,
+                () -> recordingState(RecordingService.State.IDLE) && inlineCameraIdle());
+        awaitMicrophoneAtHome();
+        onNotebook(activity -> {
+            recordTouch.send(MotionEvent.ACTION_MOVE, 0, 0);
+            recordTouch.send(MotionEvent.ACTION_MOVE, -128, 0);
+            recordTouch.send(MotionEvent.ACTION_UP, -128, 0);
+        });
+        assertNoRecordingFor(500);
+        awaitPublishedMedia(1, 0, 1);
+        JSONObject index = store.readProject(projectUri);
+        assertEquals("A late pointer stream cannot create a second entry", 1, index.getJSONArray("entries").length());
+        JSONObject entry = readEntry(ownedEntryId);
+        assertEquals(2, entry.getJSONArray("media").length());
+        JSONObject audio = findMedia(index, "audio"), video = findMedia(index, "video");
+        assertNotNull(audio);
+        assertNotNull(video);
+        assertEquals(started.startedAt, Instant.parse(audio.getString("startedAt")).toEpochMilli());
+        assertTrue(audio.getLong("durationMs") >= elapsedBeforeStop);
+        assertTrue(video.getLong("durationMs") >= 1500);
+        assertEncodedAudio(store.mediaUri(projectUri, audio.getString("path")));
+        assertEncodedVideo(store.mediaUri(projectUri, video.getString("path")));
+        assertTrue(inlineCameraIdle());
+    }
+
+    @Test public void noteEditorsLockDuringZipSaveAndRecoverTheirDraftAfterFailure() throws Exception {
+        String entryId = UUID.randomUUID().toString();
+        store.saveText(projectUri, entryId, "Original note", new JSONObject(), new JSONArray().put("original"));
+        notebook = ActivityScenario.launch(MainActivity.class);
+        awaitNotebookReady();
+        awaitRecentTitle("Original note");
+        longPressRecent();
+        String savedTitle = "Saved calibration", savedText = "The calibration passed.";
+        onNoteDialog(dialog -> {
+            ((EditText) dialog.findViewById(R.id.note_title_input)).setText(savedTitle);
+            ((EditText) dialog.findViewById(R.id.note_text_input)).setText(savedText);
+            ((EditText) dialog.findViewById(R.id.note_tags_input)).setText("calibration, bench");
+        });
+        try (TestDocumentsProvider.WriteBarrier barrier = TestDocumentsProvider.blockNextZipWrite(projectUri)) {
+            onNoteDialog(dialog -> assertTrue(dialog.findViewById(R.id.note_save).performClick()));
+            assertTrue("The save is held at the real project ZIP provider", barrier.awaitBlocked(10, TimeUnit.SECONDS));
+            onNoteDialog(dialog -> {
+                assertNoteEditorEnabled(dialog, false);
+                assertEquals(savedTitle, ((EditText) dialog.findViewById(R.id.note_title_input)).getText().toString());
+                assertEquals(savedText, ((EditText) dialog.findViewById(R.id.note_text_input)).getText().toString());
+                assertEquals("calibration, bench", ((EditText) dialog.findViewById(R.id.note_tags_input)).getText().toString());
+            });
+            assertFalse("The deterministic save barrier must not expire", barrier.timedOut());
+        }
+        JSONObject saved = awaitTextEntry(savedText);
+        awaitNotebookReady();
+        assertEquals(entryId, saved.getString("id"));
+        assertEquals(savedTitle, saved.getString("title"));
+        assertEquals(new JSONArray().put("calibration").put("bench").toString(), saved.getJSONArray("tags").toString());
+        awaitRecentTitle(savedTitle);
+        longPressRecent();
+        String retryTitle = "Retry calibration", retryText = "The follow-up calibration passed.";
+        onNoteDialog(dialog -> {
+            ((EditText) dialog.findViewById(R.id.note_title_input)).setText(retryTitle);
+            ((EditText) dialog.findViewById(R.id.note_text_input)).setText(retryText);
+            ((EditText) dialog.findViewById(R.id.note_tags_input)).setText("calibration, retry");
+        });
+        try (TestDocumentsProvider.WriteBarrier barrier = TestDocumentsProvider.blockNextZipWrite(projectUri)) {
+            TestDocumentsProvider.failNextZipWriteAfterTruncate();
+            onNoteDialog(dialog -> assertTrue(dialog.findViewById(R.id.note_save).performClick()));
+            assertTrue("The failing save also reaches the ZIP provider", barrier.awaitBlocked(10, TimeUnit.SECONDS));
+            onNoteDialog(dialog -> assertNoteEditorEnabled(dialog, false));
+            assertFalse(barrier.timedOut());
+        }
+        await("a failed ZIP write keeps the editor open for correction and retry", 15_000, () -> {
+            AtomicBoolean retryReady = new AtomicBoolean();
+            onNotebook(activity -> {
+                AlertDialog dialog = (AlertDialog) readField(activity, "noteDialog");
+                EditText body = dialog == null ? null : dialog.findViewById(R.id.note_text_input);
+                retryReady.set(dialog != null && dialog.isShowing() && body != null && body.getError() != null
+                        && dialog.findViewById(R.id.note_save).isEnabled());
+            });
+            return retryReady.get();
+        });
+        onNoteDialog(dialog -> {
+            assertNoteEditorEnabled(dialog, true);
+            assertEquals(retryTitle, ((EditText) dialog.findViewById(R.id.note_title_input)).getText().toString());
+            assertEquals(retryText, ((EditText) dialog.findViewById(R.id.note_text_input)).getText().toString());
+            assertEquals("calibration, retry", ((EditText) dialog.findViewById(R.id.note_tags_input)).getText().toString());
+        });
+        JSONObject afterFailure = readEntry(entryId);
+        assertEquals("Failed writes preserve the previously committed note", savedText, afterFailure.getString("text"));
+        assertEquals(savedTitle, afterFailure.getString("title"));
+        assertEquals(saved.getJSONArray("tags").toString(), afterFailure.getJSONArray("tags").toString());
+        onNoteDialog(dialog -> assertTrue(dialog.findViewById(R.id.note_save).performClick()));
+        JSONObject retried = awaitTextEntry(retryText);
+        awaitNotebookReady();
+        assertEquals(entryId, retried.getString("id"));
+        assertEquals(retryTitle, retried.getString("title"));
+        assertEquals(new JSONArray().put("calibration").put("retry").toString(), retried.getJSONArray("tags").toString());
+        assertEquals(saved.getString("createdAt"), retried.getString("createdAt"));
+        assertEquals(0, retried.getJSONArray("media").length());
+    }
+
+    private static void assertNoteEditorEnabled(AlertDialog dialog, boolean expected) {
+        for (int id : new int[]{R.id.note_title_input, R.id.note_text_input, R.id.note_tags_input}) {
+            EditText input = dialog.findViewById(id);
+            assertNotNull(input);
+            assertEquals("Note input must follow the save transaction state: " + input.getHint(), expected, input.isEnabled());
+        }
+        assertEquals(expected, dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled());
+        assertEquals(expected, dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled());
+    }
+
     @Test public void northeastMarkersRearmAtCenterWithinOneHeldOriginal() throws Exception {
         notebook = ActivityScenario.launch(MainActivity.class);
         awaitNotebookReady();
@@ -2417,7 +2550,7 @@ public final class NativeCaptureInstrumentedTest {
     private void assertNoRecordingFor(long durationMs) {
         long until = SystemClock.elapsedRealtime() + durationMs;
         do {
-            assertFalse("A fast standalone text swipe must cancel the delayed microphone start", RecordingService.isBusy());
+            assertFalse("No recording may start while capture is expected to remain idle", RecordingService.isBusy());
             SystemClock.sleep(25);
         } while (SystemClock.elapsedRealtime() < until);
     }
@@ -3105,7 +3238,7 @@ public final class NativeCaptureInstrumentedTest {
     }
 
     private void saveScreenshot(String name) throws IOException {
-        name = "beta17-final-" + name;
+        name = "beta18-final-" + name;
         awaitScreenshotMainTurn();
         // Held feedback intentionally keeps drawing. A fully idle UI is neither required
         // nor a bounded condition here. Behavior is established by each test's assertions;

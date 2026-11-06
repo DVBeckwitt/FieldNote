@@ -1,22 +1,24 @@
-# Fieldnote 0.2.0-beta.17
+# Fieldnote 0.2.0-beta.18
 
-Android beta (version code 18) for Android 8.0 and later.
+Android beta (version code 19) for Android 8.0 and later.
 No Google services are needed; no network permission is requested.
 Root access is neither needed nor used.
 
 ## Install
 
-Download the APK from the [beta 17 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.17).
+Download the APK from the [beta 18 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.18).
 Transfer it to the phone and open it from Files. If prompted, allow that
 installer source to install apps, then complete installation. This personal beta
 uses the local signing certificate; updates over earlier betas must use the same
 certificate. Keep the existing app installed to preserve its permissions,
 settings, and any pending captures.
 
-Beta 17 simplifies phone motion to one action: shake to start audio, then shake
-again to stop. Directional gestures, shake-to-photo/marker, training, and
-sensitivity controls have been removed. Touch gestures, home-screen shortcuts,
-the floating microphone, and background ZIP saving remain available.
+Beta 18 fixes note editing during slow saves: text, name, and tags are locked
+while the submitted note is saving, then become editable again if saving fails.
+This prevents later typing from being silently discarded when the save completes.
+Shake once still starts audio and another shake stops it while Record is open.
+Touch gestures, home-screen shortcuts, the floating microphone, and background
+ZIP saving remain available.
 The [validation summary](../docs/VALIDATION.md) records the checks and their limits.
 See [Building Fieldnote](BUILDING.md) to build or test from source.
 

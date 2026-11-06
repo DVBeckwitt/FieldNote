@@ -13,7 +13,7 @@ A minimalist Android lab notebook for audio, photos, video, and text, organized 
 
 Works without an account, Google services, or root access. Android 8.0 or newer.
 
-**[Download the beta APK](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.17)**
+**[Download the beta APK](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.18)**
 
 <img src="docs/screenshot.png" alt="Fieldnote in dark mode, showing the large recording control and latest audio/photo note" width="320">
 

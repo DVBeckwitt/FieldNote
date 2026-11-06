@@ -1724,6 +1724,9 @@ public class MainActivity extends Activity {
                 finishTextRecording(destination, entryId, recordingKey);
                 projectOperation = true;
                 ++refreshGeneration;
+                body.setEnabled(false);
+                tagsInput.setEnabled(false);
+                if (titleInput != null) titleInput.setEnabled(false);
                 save.setEnabled(false);
                 dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(false);
                 dialog.setCancelable(false);
@@ -1741,6 +1744,9 @@ public class MainActivity extends Activity {
                         main.post(() -> {
                             if (destroyed) return;
                             projectOperation = false;
+                            body.setEnabled(true);
+                            tagsInput.setEnabled(true);
+                            if (titleInput != null) titleInput.setEnabled(true);
                             save.setEnabled(true);
                             dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(true);
                             dialog.setCancelable(true);

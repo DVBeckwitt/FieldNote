@@ -1,63 +1,68 @@
-# Beta 17 validation
+# Beta 18 validation
 
-Version **0.2.0-beta.17**, code **18**, was validated locally on 2026-11-06.
-The [GitHub release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.17)
-provides the APK. Package: `com.fieldnote.app`; artifact size: **215,192 bytes**.
+Version **0.2.0-beta.18**, code **19**, was validated locally on 2026-11-06.
+The [GitHub release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.18)
+provides the APK. Package: `com.fieldnote.app`; artifact size: **215,336 bytes**.
 
-SHA-256: `6a817ab55b196f67ad2fae216fe09a2d946130f0bdaab2e050b9418020d3e4d4`.
+SHA-256: `67616307135ce3a59425e657ee143c278711ed7a52364fdde6df2a23bd2baf9b`.
+
+## Bug review and correction
+
+A slow note save left its text, name, and tags editable after taking the submitted
+snapshot. Typing during ZIP publication could therefore disappear when the dialog
+closed. The new regression reproduced this in the unfixed code against a blocked
+storage provider. The fix disables all three fields during submission and restores
+them on failure, keeping the draft available for correction and retry.
+
+The regression now passes. It checks input/button state during a blocked ZIP write,
+persisted content and tags, recovery after an injected write failure, and a successful
+retry preserving the entry identity and creation time. A second regression verifies
+that shaking to stop held audio/video cancels the touch hold: late finger movement
+and release cannot restart recording or take an extra photo. It decodes the saved
+AAC/MP4 originals and checks their entry links and capture times.
+
+Independent source review of shake lifecycle, camera transitions, floating capture,
+ZIP recovery, annotations, search, and shortcuts found no other confirmed defect.
 
 ## Build and tests
 
 Environment: Windows, JDK 21, Gradle 8.14.6, Android Gradle Plugin 8.6.0,
-and SDK 35. The complete release/JVM/lint/native gate passed in 4m 5s.
+and SDK 35. The complete release/JVM/lint/native gate passed in **4m 30s**.
 See [build instructions](../android/BUILDING.md) for the commands.
 
 | Check | Result |
 | --- | --- |
 | Release assembly | Passed |
 | JVM tests | 62 passed |
-| Native API 36 emulator tests | 108 passed |
-| Android total | **170 passed; 0 failures, errors, or skips** |
+| Native API 36 emulator tests | 110 passed |
+| Android total | **172 passed; 0 failures, errors, or skips** |
 | Release lint | **0 errors, 63 warnings** |
-| Signed release install and launch | Passed; version and non-debuggable flag verified |
+| Signed release update from beta 17 | Passed; microphone grant preserved |
+| Signed release launch | Passed; packaged version and non-debuggable flag verified |
 
-Nine detector tests cover separated shakes, cooldown and quiet rearming, input
-axes/signs, isolated bumps, sustained motion, invalid samples, and stale sessions.
-Tests for retired training and directional features were replaced with simple-shake
-coverage. Native tests invoke the recognized-shake callback to start and stop real
-AAC recording, retain linked touch photos and markers, verify foreground/settings
-gating, and check preference migration. They do not simulate a physical phone shake.
+Both new native tests passed in a focused run and again in the full gate. Existing
+capture, playback, marker, overlay, shortcut, storage, ZIP publication, and security
+checks also passed. The retained browser prototype was unchanged and was not
+retested. Lint warnings remain; none were suppressed to pass.
 
-Existing native coverage for launcher shortcuts, floating touch controls, camera
-transitions, original media decoding, text drafts, project ZIP publication, search,
-markers, storage, and security also passed. The retained browser prototype was
-unchanged and was not retested for this release.
-
-## APK and visual checks
+## APK and runtime limits
 
 APK Signature Scheme v2 verification passed with the same certificate as earlier
 betas. Packaged checks confirmed minimum API 26, target API 35, and a non-debuggable
-release. The six retired motion/training classes and training labels are absent;
-the new shake detector is present. The signed APK installed and launched on the
-emulator. Actual dark/light Record and simplified Settings screenshots were inspected.
-
-## Emulator recovery and limits
-
-Initial native runs were interrupted by Windows access violations in the emulator
-host using SwiftShader. The same source and APK passed the focused shake case and
-the complete gate after switching to verified NVIDIA host rendering. No assertions
-or application code were changed to obtain that pass.
+release. The published APK must match the verified local artifact and checksum.
 
 Native behavior tests use the debug variant on Android 16 / API 36 with an emulated
-camera and no host microphone audio. They do not establish physical Pixel/GrapheneOS
-behavior, hand-motion sensitivity, haptic feel, or every Android/storage-provider
-combination. Lint warnings remain; none were suppressed to pass.
+camera, no host microphone audio, and verified NVIDIA host rendering. Signed-release
+checks cover package update, permission retention, and launch, not a complete user-data
+migration exercise. Physical Pixel/GrapheneOS behavior, hand-motion sensitivity,
+haptic feel, and every Android/storage-provider combination remain unverified.
+Shake tests use synthetic traces or recognized-shake callbacks, not physical motion.
 
-Shake recording operates while the Record screen is open and focused. Settings,
-notes, Files, dialogs, background use, and the floating overlay suspend it. The
-floating control retains its touch gestures and normal Android permission
-requirements. Root is not used. See the [beta guide](../android/BETA.md).
+Shake recording remains limited to the focused Record screen. The floating control
+retains touch gestures and normal Android permission requirements. Root is not used.
+See the [beta guide](../android/BETA.md).
 
 Project ZIPs contain plaintext original media and metadata. No app-level encryption
 or exhaustive security guarantee is claimed. There is currently no CI workflow;
-these are local validation results, with remote checks inventoried at publication.
+these are local validation results, with exact-commit remote checks inventoried
+before and after publication.
