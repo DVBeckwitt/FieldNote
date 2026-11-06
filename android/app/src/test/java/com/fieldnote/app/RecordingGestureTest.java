@@ -477,6 +477,76 @@ public class RecordingGestureTest {
         assertEquals(RecordingGesture.Direction.RIGHT, gesture.update(580, 500));
     }
 
+    @Test public void southeastCloseIsOptInAndDefaultAxesRemainUnchanged() {
+        RecordingGesture main = new RecordingGesture(80, 28);
+        main.onDown(0, 0);
+        assertEquals(RecordingGesture.Direction.NONE, main.update(60, 60));
+        assertTrue(main.onUp());
+        assertEquals(RecordingGesture.Direction.RIGHT, RecordingGesture.candidateDirection(80, 40));
+        assertEquals(RecordingGesture.Direction.DOWN, RecordingGesture.candidateDirection(40, 80));
+
+        RecordingGesture floating = new RecordingGesture(80, 28, true);
+        floating.onDown(0, 0);
+        assertEquals(RecordingGesture.Direction.CLOSE, floating.update(60, 60));
+        assertFalse(floating.isLocked());
+    }
+
+    @Test public void closeUsesRadialThresholdAndStaysLatchedUntilTheNextPress() {
+        RecordingGesture gesture = new RecordingGesture(80, 28, true);
+        gesture.onDown(300, 400);
+        assertEquals(RecordingGesture.Direction.NONE, gesture.update(347.4f, 463.2f));
+        assertTrue(gesture.isArmed());
+        assertEquals(RecordingGesture.Direction.CLOSE, gesture.update(348, 464));
+        assertFalse(gesture.isArmed());
+        assertFalse(gesture.isLocked());
+        assertEquals(RecordingGesture.Direction.CLOSE, gesture.update(300, 400));
+        assertTrue(gesture.isCentered());
+        assertEquals(RecordingGesture.Direction.CLOSE, gesture.update(200, 400));
+        assertFalse(gesture.onUp());
+        assertFalse(gesture.onUp());
+        assertEquals(RecordingGesture.Direction.CLOSE, gesture.update(360, 460));
+        gesture.onDown(300, 400);
+        assertEquals(RecordingGesture.Direction.NONE, gesture.getDirection());
+        assertTrue(gesture.onUp());
+    }
+
+    @Test public void enabledCloseWedgeTakesPriorityOverVideoAndTextAtItsInclusiveEdges() {
+        assertEquals(RecordingGesture.Direction.CLOSE, RecordingGesture.candidateDirection(80, 40, true));
+        assertEquals(RecordingGesture.Direction.CLOSE, RecordingGesture.candidateDirection(40, 80, true));
+        assertEquals(RecordingGesture.Direction.RIGHT, RecordingGesture.candidateDirection(80, 39.99f, true));
+        assertEquals(RecordingGesture.Direction.DOWN, RecordingGesture.candidateDirection(39.99f, 80, true));
+        assertEquals(RecordingGesture.Direction.MARKER, RecordingGesture.candidateDirection(80, -40, true));
+        assertEquals(RecordingGesture.Direction.NONE, RecordingGesture.candidateDirection(-60, 60, true));
+        assertEquals(RecordingGesture.Direction.NONE, RecordingGesture.candidateDirection(Float.NaN, 80, true));
+    }
+
+    @Test public void movingVideoTowardCloseEndsVideoButRequiresHomeBeforeClosing() {
+        RecordingGesture gesture = new RecordingGesture(80, 28, true);
+        gesture.onDown(0, 0);
+        assertEquals(RecordingGesture.Direction.RIGHT, gesture.update(100, 0));
+        assertEquals(RecordingGesture.Direction.RIGHT, gesture.update(100, 49.99f));
+        assertEquals(RecordingGesture.Direction.NONE, gesture.update(100, 50));
+        assertFalse(gesture.isArmed());
+        assertEquals(RecordingGesture.Direction.NONE, gesture.update(100, 100));
+        assertEquals(RecordingGesture.Direction.NONE, gesture.update(0, 0));
+        assertTrue(gesture.isArmed());
+        assertEquals(RecordingGesture.Direction.CLOSE, gesture.update(60, 60));
+    }
+
+    @Test public void closeRequiresHomeAfterAnOffCenterPressAndResetCancelsIt() {
+        RecordingGesture gesture = new RecordingGesture(80, 28, true);
+        gesture.onDownAt(300, 400, 340, 400);
+        assertFalse(gesture.isArmed());
+        assertEquals(RecordingGesture.Direction.NONE, gesture.update(400, 500));
+        assertEquals(RecordingGesture.Direction.NONE, gesture.update(300, 400));
+        assertTrue(gesture.isArmed());
+        assertEquals(RecordingGesture.Direction.CLOSE, gesture.update(360, 460));
+        gesture.reset();
+        assertEquals(RecordingGesture.Direction.NONE, gesture.getDirection());
+        assertEquals(RecordingGesture.Direction.NONE, gesture.update(360, 460));
+        assertFalse(gesture.onUp());
+    }
+
     @Test public void thresholdMustBeFiniteAndPositive() {
         for (float invalid : new float[]{0, -1, Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY}) {
             assertThrows(IllegalArgumentException.class, () -> new RecordingGesture(invalid));

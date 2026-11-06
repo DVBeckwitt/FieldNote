@@ -29,7 +29,7 @@ public final class RecordingShortcuts {
     private static final String LABEL = "Record now";
     private static final String FLOATING_LABEL = "Floating mic";
     private static final String VERSION_KEY = "record_shortcut_version";
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final int LAUNCH_FLAGS = Intent.FLAG_ACTIVITY_NEW_TASK
             | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP;
     private static final Object NONCE_LOCK = new Object();
@@ -119,15 +119,27 @@ public final class RecordingShortcuts {
 
     /** Call off the UI thread while the app is foreground; true means the launcher accepted the request. */
     public static boolean requestPin(Context context) {
+        return requestPin(context, false);
+    }
+
+    /** Pins the overlay action separately from the immediate in-app recording action. */
+    public static boolean requestPinFloating(Context context) {
+        return requestPin(context, true);
+    }
+
+    private static boolean requestPin(Context context, boolean floating) {
         try {
             Context app = application(context);
             ShortcutManager manager = app.getSystemService(ShortcutManager.class);
             if (manager == null || !manager.isRequestPinShortcutSupported()) return false;
-            Intent intent = recordIntent(app);
-            return isRecordIntent(app, intent) && refreshPinned(app, manager, SHORTCUT_ID, LABEL, intent)
-                    && manager.requestPinShortcut(shortcut(app, SHORTCUT_ID, LABEL, intent), null);
+            String id = floating ? FLOATING_SHORTCUT_ID : SHORTCUT_ID;
+            String label = floating ? FLOATING_LABEL : LABEL;
+            Intent intent = floating ? overlayIntent(app) : recordIntent(app);
+            boolean authenticated = floating ? isOverlayIntent(app, intent) : isRecordIntent(app, intent);
+            return authenticated && refreshPinned(app, manager, id, label, intent)
+                    && manager.requestPinShortcut(shortcut(app, id, label, intent), null);
         } catch (RuntimeException unavailable) {
-            Log.w("FieldnoteShortcuts", "Pinning a recording shortcut is unavailable.");
+            Log.w("FieldnoteShortcuts", "Pinning a Fieldnote shortcut is unavailable.");
             return false;
         }
     }
@@ -162,7 +174,7 @@ public final class RecordingShortcuts {
         metadata.putInt(VERSION_KEY, VERSION); // Icon/label revision, never the authentication token.
         return new ShortcutInfo.Builder(context, id)
                 .setActivity(new ComponentName(context, MainActivity.class))
-                .setShortLabel(label).setLongLabel(label)
+                .setShortLabel(label).setLongLabel(longLabel(id))
                 .setIcon(Icon.createWithResource(context, R.drawable.ic_shortcut_record))
                 .setIntent(intent).setExtras(metadata).build();
     }
@@ -181,13 +193,17 @@ public final class RecordingShortcuts {
         Intent[] intents = current.getIntents();
         PersistableBundle metadata = current.getExtras();
         return current.isEnabled() && TextUtils.equals(label, current.getShortLabel())
-                && TextUtils.equals(label, current.getLongLabel())
+                && TextUtils.equals(longLabel(current.getId()), current.getLongLabel())
                 && new ComponentName(context, MainActivity.class).equals(current.getActivity())
                 && metadata != null && metadata.getInt(VERSION_KEY) == VERSION
                 && intents != null && intents.length == 1 && intents[0] != null
                 && expected.filterEquals(intents[0])
                 && (intents[0].getFlags() & LAUNCH_FLAGS) == LAUNCH_FLAGS
                 && authenticated(context, intents[0], expected.getAction());
+    }
+
+    private static String longLabel(String id) {
+        return FLOATING_SHORTCUT_ID.equals(id) ? "Show floating mic" : "Record now in app";
     }
 
     private static String nonce(Context context) {

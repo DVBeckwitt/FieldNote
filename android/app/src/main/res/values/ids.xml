@@ -1,5 +1,8 @@
 <resources>
     <item type="id" name="record_button" />
+    <item type="id" name="floating_move_handle" />
+    <item type="id" name="add_record_shortcut" />
+    <item type="id" name="add_floating_shortcut" />
     <item type="id" name="record_status" />
     <item type="id" name="record_title" />
     <item type="id" name="files_button" />

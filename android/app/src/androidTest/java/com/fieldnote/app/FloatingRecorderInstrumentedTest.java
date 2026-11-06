@@ -26,6 +26,7 @@ import android.provider.Settings;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.EditText;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -239,6 +240,115 @@ public final class FloatingRecorderInstrumentedTest {
         assertRealOriginals(index);
     }
 
+    @Test public void draggingFloatingHandleMovesIdleMicAndRestoresPositionAfterReopening() throws Exception {
+        launchOverlay();
+        float[] original = microphoneCenter();
+        dragFloatingHandle();
+        float[] moved = microphoneCenter();
+        assertTrue("The handle repositions the physical mic within its safe bounds",
+                Math.hypot(moved[0] - original[0], moved[1] - original[1]) > 20 * moved[2]);
+        assertFalse("Moving the idle control does not start audio", RecordingService.isBusy());
+        closeOverlayFromMic();
+        launchOverlay();
+        awaitMicHome();
+        float[] restored = microphoneCenter();
+        assertEquals("Reopening restores the horizontal position", moved[0], restored[0], 2f);
+        assertEquals("Reopening restores the vertical position", moved[1], restored[1], 2f);
+        assertEquals(0, store.readProject(project).getJSONArray("entries").length());
+        saveScreenshot("beta22-floating-moved.png");
+    }
+
+    @Test public void draggingFloatingHandleKeepsTheSameLockedNarration() throws Exception {
+        launchOverlay();
+        RecordingService.Snapshot started = holdAudio();
+        touch.move(0, -128);
+        touch.up(0, -128);
+        awaitMicHome();
+        assertHeldIdentity(started, true);
+        float[] original = microphoneCenter();
+        dragFloatingHandle();
+        float[] moved = microphoneCenter();
+        assertTrue("A locked recording's control remains movable",
+                Math.hypot(moved[0] - original[0], moved[1] - original[1]) > 20 * moved[2]);
+        assertHeldIdentity(started, true);
+        closeOverlayFromMic();
+        JSONObject index = awaitPublished(1, 0, 0);
+        assertSingleEntry(index, started.entryId, 1);
+        assertRealOriginals(index);
+    }
+
+    @Test public void secondFingerOnMoveHandleCannotStealAnActiveMicHold() throws Exception {
+        launchOverlay();
+        RecordingService.Snapshot started = holdAudio();
+        float[] original = microphoneCenter();
+        float[] handle = overlayViewCenter(R.id.floating_move_handle);
+        touch.addSecondAt((handle[0] - touch.x) / touch.density, (handle[1] - touch.y) / touch.density);
+        touch.moveSecond(-40, -120);
+        touch.liftSecond();
+        assertHeldIdentity(started, false);
+        float[] after = microphoneCenter();
+        assertEquals("The extra finger cannot reposition an owned hold", original[0], after[0], 2f);
+        assertEquals("The extra finger cannot reposition an owned hold", original[1], after[1], 2f);
+        assertTrue("The microphone retains its original pointer owner",
+                onMainValue(() -> (boolean) field(requireService(), "touching")));
+        touch.up(0, 0);
+        JSONObject index = awaitPublished(1, 0, 0);
+        assertSingleEntry(index, started.entryId, 1);
+        assertRealOriginals(index);
+    }
+
+    @Test public void southeastCloseStopsExplicitlyLockedNarrationAndRemovesOverlay() throws Exception {
+        launchOverlay();
+        RecordingService.Snapshot started = holdAudio();
+        touch.move(0, -128);
+        touch.up(0, -128);
+        awaitMicHome();
+        assertHeldIdentity(started, true);
+        closeOverlayFromMic(true);
+        JSONObject index = awaitPublished(1, 0, 0);
+        assertSingleEntry(index, started.entryId, 1);
+        assertRealOriginals(index);
+        assertFalse("Close must not leave a hidden locked microphone", RecordingService.isBusy());
+    }
+
+    @Test public void southeastCloseAfterVideoCenterKeepsLinkedAudioAndVideo() throws Exception {
+        launchOverlay();
+        RecordingService.Snapshot started = holdAudio();
+        touch.move(128, 0);
+        awaitVideoFrames();
+        touch.move(0, 0);
+        touch.move(90, 90);
+        await("the close gesture ends the overlay and its held narration", 25_000,
+                () -> activeService() == null && !RecordingService.isBusy());
+        touch.cancel();
+        JSONObject index = awaitPublished(1, 0, 1);
+        assertSingleEntry(index, started.entryId, 2);
+        assertRealOriginals(index);
+        assertFalse(FloatingRecorderService.isShowing());
+    }
+
+    @Test public void southeastCloseFinalizesAnActiveStandaloneVideoWithEmbeddedAudio() throws Exception {
+        launchOverlay();
+        awaitMicHome();
+        touch = new TouchPath();
+        touch.quickRightSwipe();
+        awaitVideoFrames();
+        assertFalse(RecordingService.isBusy());
+        FloatingRecorderService owner = onMainValue(this::requireService);
+        InlineCamera camera = onMainValue(() -> (InlineCamera) field(owner, "camera"));
+        HandlerThread cameraThread = (HandlerThread) field(camera, "thread");
+        assertTrue(onMainValue(camera::isRecording));
+        closeOverlayFromMic();
+        await("Close releases the active Camera2 worker", 15_000,
+                () -> !cameraThread.isAlive() && onMainValue(() -> !camera.isBusy()));
+        JSONObject index = awaitPublished(0, 0, 1);
+        assertEquals(1, index.getJSONArray("entries").length());
+        assertRealOriginals(index);
+        JSONObject video = mediaOfKind(index, "video").getJSONObject(0);
+        assertEncodedMedia(store.mediaUri(project, video.getString("path")), true);
+        assertFalse(FloatingRecorderService.isShowing());
+    }
+
     @Test public void centerPhotoCenterPhotoKeepsOneAudioAndTwoOriginalPhotos() throws Exception {
         launchOverlay();
         RecordingService.Snapshot started = holdAudioAt(32);
@@ -293,6 +403,8 @@ public final class FloatingRecorderInstrumentedTest {
         awaitMicHome();
         touch = new TouchPath();
         touch.press();
+        assertTrue("The settled microphone receives the next hold after locking",
+                onMainValue(() -> (Boolean) field(requireService(), "touching")));
         touch.move(90, -90);
         await("the diagonal gesture durably journals one marker", 5_000,
                 () -> RecordingService.snapshot().markerCount == 1);
@@ -437,6 +549,65 @@ public final class FloatingRecorderInstrumentedTest {
         return holdAudioAt(0);
     }
 
+    private float[] microphoneCenter() throws Exception { return overlayViewCenter(R.id.record_button); }
+
+    private float[] overlayViewCenter(int id) throws Exception {
+        return onMainValue(() -> {
+            View surface = (View) field(requireService(), "surface");
+            View target = surface.findViewById(id);
+            assertNotNull("The overlay exposes the requested native control", target);
+            assertTrue(target.isShown() && target.getWidth() > 0 && target.getHeight() > 0);
+            int[] location = new int[2];
+            target.getLocationOnScreen(location);
+            return new float[]{location[0] + target.getWidth() * target.getScaleX() / 2f,
+                    location[1] + target.getHeight() * target.getScaleY() / 2f,
+                    target.getResources().getDisplayMetrics().density};
+        });
+    }
+
+    private void dragFloatingHandle() throws Exception {
+        awaitMicHome();
+        float[] position = microphoneCenter();
+        float dx = position[0] > context.getResources().getDisplayMetrics().widthPixels / 2f ? -50 : 50;
+        float dy = position[1] > context.getResources().getDisplayMetrics().heightPixels / 2f ? -100 : 100;
+        touch = new TouchPath(R.id.floating_move_handle);
+        touch.press();
+        assertTrue("The settled move handle receives its own pointer",
+                onMainValue(() -> (Boolean) field(requireService(), "moving")));
+        long pressed = SystemClock.elapsedRealtime();
+        await("handle hold exceeds the microphone's recording delay", 2_000,
+                () -> SystemClock.elapsedRealtime() - pressed >= 300);
+        touch.move(dx, dy);
+        touch.up(dx, dy);
+        await("dragged overlay layout reaches its new physical position", 5_000, () -> {
+            float[] moved = microphoneCenter();
+            return Math.hypot(moved[0] - position[0], moved[1] - position[1]) > 20 * moved[2];
+        });
+        awaitMicHome();
+    }
+
+    private void closeOverlayFromMic() throws Exception {
+        closeOverlayFromMic(false);
+    }
+
+    private void closeOverlayFromMic(boolean inspectGuide) throws Exception {
+        awaitMicHome();
+        touch = new TouchPath();
+        if (inspectGuide) {
+            touch.press();
+            saveScreenshot("beta22-floating-guide-center.png");
+            touch.move(65, 65);
+            assertTrue("Approaching the close target must keep the overlay open", FloatingRecorderService.isShowing());
+            saveScreenshot("beta22-floating-close-guide.png");
+            touch.move(90, 90);
+            touch.cancel();
+        } else touch.quickSoutheastSwipe();
+        await("southeast close finishes the overlay and its recording", 25_000,
+                () -> activeService() == null && !RecordingService.isBusy());
+        touch.cancel();
+        assertFalse(FloatingRecorderService.isShowing());
+    }
+
     private RecordingService.Snapshot holdAudioAt(float xOffsetDp) throws Exception {
         awaitMicHome();
         touch = new TouchPath();
@@ -478,12 +649,21 @@ public final class FloatingRecorderInstrumentedTest {
     }
 
     private void awaitMicHome() throws Exception {
-        await("the overlay microphone returns to its physical center", 5_000,
+        await("the overlay microphone returns home and its compact window finishes layout", 5_000,
                 () -> onMainValue(() -> {
                     FloatingRecorderService service = activeService();
                     if (service == null) return false;
                     View mic = (View) field(service, "microphone");
-                    return mic != null && mic.isAttachedToWindow() && !mic.isPressed()
+                    View surface = (View) field(service, "surface");
+                    WindowManager.LayoutParams window = (WindowManager.LayoutParams) field(service, "micWindow");
+                    float density = context.getResources().getDisplayMetrics().density;
+                    // The 230ms home animation ends before the 240ms contraction.
+                    // Sampling coordinates then can race Android's window/input relayout.
+                    boolean compactLayout = window != null && surface != null
+                            && window.width == Math.round(96 * density) && window.height == Math.round(160 * density)
+                            && surface.getWidth() == window.width && surface.getHeight() == window.height
+                            && !surface.isLayoutRequested();
+                    return compactLayout && mic != null && mic.isAttachedToWindow() && !mic.isPressed()
                             && Math.abs(mic.getTranslationX()) < 1 && Math.abs(mic.getTranslationY()) < 1
                             && Math.abs(mic.getScaleX() - 1f) < .01f && Math.abs(mic.getScaleY() - 1f) < .01f;
                 }));
@@ -582,10 +762,13 @@ public final class FloatingRecorderInstrumentedTest {
         boolean secondDown;
         int soloId;
         float lastX, lastY;
-        TouchPath() throws Exception {
+        float secondX, secondY;
+        TouchPath() throws Exception { this(R.id.record_button); }
+        TouchPath(int viewId) throws Exception {
             float[] position = onMainValue(() -> {
-                View mic = (View) field(requireService(), "microphone");
-                assertEquals(R.id.record_button, mic.getId());
+                View surface = (View) field(requireService(), "surface");
+                View mic = surface.findViewById(viewId);
+                assertNotNull("The requested overlay touch target exists", mic);
                 int[] location = new int[2];
                 mic.getLocationOnScreen(location);
                 return new float[]{location[0] + mic.getWidth() / 2f, location[1] + mic.getHeight() / 2f,
@@ -605,16 +788,28 @@ public final class FloatingRecorderInstrumentedTest {
             down = secondDown = false;
         }
         void addSecond() {
+            addSecondAt(lastX + 12, lastY);
+        }
+        void addSecondAt(float dx, float dy) {
             assertTrue(down && !secondDown && soloId == 0);
+            secondX = dx;
+            secondY = dy;
             sendPair(MotionEvent.ACTION_POINTER_DOWN | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT));
             secondDown = true;
+        }
+        void moveSecond(float dx, float dy) {
+            assertTrue(secondDown);
+            secondX = dx;
+            secondY = dy;
+            sendPair(MotionEvent.ACTION_MOVE);
         }
         void liftOwner() {
             assertTrue(secondDown);
             sendPair(MotionEvent.ACTION_POINTER_UP);
             secondDown = false;
             soloId = 1;
-            lastX += 12;
+            lastX = secondX;
+            lastY = secondY;
         }
         void liftSecond() {
             assertTrue(secondDown);
@@ -629,8 +824,8 @@ public final class FloatingRecorderInstrumentedTest {
                 pointers[i].id = i;
                 pointers[i].toolType = MotionEvent.TOOL_TYPE_FINGER;
                 points[i] = new MotionEvent.PointerCoords();
-                points[i].x = x + (lastX + 12 * i) * density;
-                points[i].y = y + lastY * density;
+                points[i].x = x + (i == 0 ? lastX : secondX) * density;
+                points[i].y = y + (i == 0 ? lastY : secondY) * density;
                 points[i].pressure = 1;
                 points[i].size = 1;
             }
@@ -640,13 +835,15 @@ public final class FloatingRecorderInstrumentedTest {
                     instrumentation.getUiAutomation().injectInputEvent(event, true)); }
             finally { event.recycle(); }
         }
-        void quickRightSwipe() {
+        void quickRightSwipe() { quickSwipe(128, 0); }
+        void quickSoutheastSwipe() { quickSwipe(90, 90); }
+        private void quickSwipe(float dx, float dy) {
             down = true;
             // Queue the complete input path before the host's 180ms hold timer;
             // no UI-idle wait is inserted between the physical pointer events.
             send(MotionEvent.ACTION_DOWN, 0, 0, false);
-            send(MotionEvent.ACTION_MOVE, 128, 0, false);
-            send(MotionEvent.ACTION_UP, 128, 0, false);
+            send(MotionEvent.ACTION_MOVE, dx, dy, false);
+            send(MotionEvent.ACTION_UP, dx, dy, false);
             down = false;
         }
         private void send(int action, float dx, float dy) {

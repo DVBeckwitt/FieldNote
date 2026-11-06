@@ -55,6 +55,49 @@ public final class GestureGuideInstrumentedTest {
         }
     }
 
+    @Test public void closeTargetIsDrawnOnlyForFloatingGuideAndKeepsItsGradient() {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        Bitmap[] frames = new Bitmap[3];
+        int[] sample = new int[2];
+        instrumentation.runOnMainSync(() -> {
+            Context context = instrumentation.getTargetContext();
+            float density = context.getResources().getDisplayMetrics().density;
+            int size = Math.round(320 * density);
+            float center = size / 2f;
+            float threshold = RecordingGesture.ACTIVATION_DISTANCE_DP * density;
+            sample[0] = Math.round(center + threshold * (float) Math.sqrt(.5));
+            sample[1] = Math.round(center + 56 * density);
+            GestureGuideView main = new GestureGuideView(context, threshold,
+                    RecordingGesture.HOME_RADIUS_DP * density);
+            main.layout(0, 0, size, size);
+            main.begin(center, center);
+            frames[0] = drawFrame(main, size);
+            main.finish();
+
+            GestureGuideView floating = new GestureGuideView(context, threshold,
+                    RecordingGesture.HOME_RADIUS_DP * density, true);
+            floating.layout(0, 0, size, size);
+            floating.begin(center, center);
+            frames[1] = drawFrame(floating, size);
+            frames[2] = drawFrame(floating, size);
+            floating.update(60 * density, 60 * density, RecordingGesture.Direction.NONE);
+            assertEquals(RecordingGesture.Direction.CLOSE, floating.getApproachDirection());
+            assertTrue(floating.getApproachProgress() > 0);
+            floating.finish();
+        });
+        try {
+            assertEquals("The main guide has no southeast target", 0,
+                    Color.alpha(frames[0].getPixel(sample[0], sample[0])));
+            assertTrue("The floating close symbol is visible",
+                    Color.alpha(frames[1].getPixel(sample[0], sample[0])) > 0);
+            assertTrue("The close approach gradient is visible",
+                    Color.alpha(frames[1].getPixel(sample[1], sample[1])) > 0);
+            assertTrue("The close target and gradient survive subsequent frames", frames[1].sameAs(frames[2]));
+        } finally {
+            for (Bitmap frame : frames) if (frame != null) frame.recycle();
+        }
+    }
+
     private static Bitmap drawFrame(GestureGuideView guide, int size) {
         Bitmap frame = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
         guide.draw(new Canvas(frame));

@@ -1,24 +1,23 @@
-# Fieldnote 0.2.0-beta.21
+# Fieldnote 0.2.0-beta.22
 
-Android beta (version code 22) for Android 8.0 and later.
+Android beta (version code 23) for Android 8.0 and later.
 No Google services are needed; no network permission is requested.
 Root access is neither needed nor used.
 
 ## Install
 
-Download the APK from the [beta 21 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.21).
+Download the APK from the [beta 22 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.22).
 Transfer it to the phone and open it from Files. If prompted, allow that
 installer source to install apps, then complete installation. This personal beta
 uses the local signing certificate; updates over earlier betas must use the same
 certificate. Keep the existing app installed to preserve its permissions,
 settings, and any pending captures.
 
-Beta 21 fixes multi-touch recording on both the main microphone and floating
-control. The finger that starts a hold owns that hold: lifting it ends the hold,
-while an extra finger cannot take over its gestures. An explicit upward lock still
-keeps audio recording. Tapping Settings with another finger cannot interrupt a
-held recording. The folder button beside Settings, notes list, home-screen widget,
-shake start/stop, and background ZIP saving remain available.
+Beta 22 offers separate home-screen shortcuts for immediate recording in the
+main app and for showing the floating microphone. Drag the floating control's
+small handle to reposition it; its position is remembered. Swipe the microphone
+diagonally down-right to close it and finish the current audio/video, including
+locked audio. The existing main-screen gestures and project ZIP workflow remain.
 The [validation summary](../docs/VALIDATION.md) records the checks and their limits.
 See [Building Fieldnote](BUILDING.md) to build or test from source.
 
@@ -100,6 +99,8 @@ In **Settings**, choose:
 - **Add Record now shortcut** to request placement on your home screen. Confirm
   it in your launcher. You can also long-press the Fieldnote app icon to find
   **Record now** when your launcher supports app shortcuts.
+- **Add Floating mic shortcut** to request a separate launcher shortcut that
+  shows the overlay. You can also find **Floating mic** by long-pressing the app icon.
 - **Add floating mic widget** for the single blue microphone button. Confirm
   placement in your launcher; if pinning is unavailable, add **Floating mic**
   from the launcher's widget picker.
@@ -109,7 +110,9 @@ In **Settings**, choose:
 Tapping **Record now** opens Fieldnote and starts locked, hands-free audio as
 soon as the project and microphone permission are ready. Tap the microphone
 to stop and save. It does not require holding the shortcut. An already-running
-recording keeps its existing lock state.
+recording keeps its project and original file. If the floating control is open,
+Record now hides it and keeps that audio locked on the main screen instead of
+starting a duplicate recording. Finish floating video or text entry before this handoff.
 
 First, open Fieldnote, create a project, then use **Settings > Show floating mic**
 to finish setup. Allow **Display over other apps** (sometimes called **Draw over
@@ -136,7 +139,20 @@ audio running through typing; **Save** links the text and ends audio, while
 **Skip** ends audio without text. Quick gestures before audio starts can create
 standalone media or text. A small camera preview appears beside or above the mic.
 
-Use the **Fieldnote floating microphone** notification to close the control.
+Drag the small six-dot handle above the circle to move it without recording.
+Its position is remembered across closing/reopening and adapted to screen changes.
+Movement stays within bounds that leave space for every swipe target. You can move
+it while audio is locked; moving is unavailable during a held mic gesture, camera
+capture, or text editor.
+
+Swipe the microphone **diagonally down-right toward X** to close the floating
+control and finish its active audio/video, including explicitly locked audio.
+The close target appears with the other gesture guides and uses the same approach,
+retreat, and activation haptics. Return to center before changing from a video
+swipe to another action, including close. This close gesture belongs only to the
+floating control; the main microphone keeps its existing gestures.
+
+The **Fieldnote floating microphone** notification remains available too.
 **Hide** preserves explicitly locked narration, which has its own recording
 notification; it ends an unlocked hold, camera capture, or narration being used
 by the text editor. **Stop all** ends

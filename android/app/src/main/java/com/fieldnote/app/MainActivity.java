@@ -134,6 +134,7 @@ public class MainActivity extends Activity {
     // A launch request is consumed before capture starts, never replayed on ordinary resume.
     private static final int QUICK_NONE = 0, QUICK_RECORD = 1, QUICK_FLOATING = 2;
     private int quickMode;
+    private final Runnable continueAfterOverlayHide = this::continueQuickCapture;
     private boolean quickResolving, quickReady, quickPermission, overlayPermissionRequest;
     private long quickGeneration;
     private Uri quickProject;
@@ -292,6 +293,7 @@ public class MainActivity extends Activity {
     }
 
     private void cancelQuickCapture() {
+        main.removeCallbacks(continueAfterOverlayHide);
         if (quickResolving) projectLoading = false;
         quickMode = QUICK_NONE;
         quickProject = null;
@@ -348,6 +350,16 @@ public class MainActivity extends Activity {
             cancelQuickCapture();
             if (inlineCamera != null) inlineCamera.releaseHardware();
             if (FloatingRecorderService.show(this, destination)) moveTaskToBack(true);
+            return;
+        }
+        if (FloatingRecorderService.isShowing()) {
+            // The static shortcut takes over the same original when audio already
+            // exists. Hide is asynchronous: let it finish before starting fresh audio,
+            // or its teardown could stop the new recording as an unlocked capture.
+            if (RecordingService.isRecording()) RecordingService.lock(this);
+            FloatingRecorderService.hide(this);
+            main.removeCallbacks(continueAfterOverlayHide);
+            main.postDelayed(continueAfterOverlayHide, 32);
             return;
         }
         if (RecordingService.isRecording()) {
@@ -2008,13 +2020,17 @@ public class MainActivity extends Activity {
         addAction(content, "Add Record now shortcut", () -> localIo.execute(() -> {
             boolean accepted = RecordingShortcuts.requestPin(this);
             main.post(() -> { if (!destroyed) toast(accepted ? "Confirm the shortcut in your launcher." : "Long-press the Fieldnote app icon to find Record now."); });
-        }));
+        })).setId(R.id.add_record_shortcut);
+        addAction(content, "Add Floating mic shortcut", () -> localIo.execute(() -> {
+            boolean accepted = RecordingShortcuts.requestPinFloating(this);
+            main.post(() -> { if (!destroyed) toast(accepted ? "Confirm the shortcut in your launcher." : "Long-press the Fieldnote app icon to find Floating mic."); });
+        })).setId(R.id.add_floating_shortcut);
         addAction(content, "Add floating mic widget", () -> localIo.execute(() -> {
             boolean accepted = RecordingWidget.requestPin(this);
             main.post(() -> { if (!destroyed) toast(accepted ? "Confirm the widget in your launcher." : "Add Floating mic from your launcher’s widget picker."); });
         }));
         addAction(content, "Show floating mic", () -> acceptQuickIntent(RecordingShortcuts.overlayIntent(this)));
-        content.addView(text("Home-screen capture uses your last-created project. The floating mic needs Android’s Display over other apps permission.", 12, muted));
+        content.addView(text("Record now opens this screen and starts audio immediately. Floating mic shows the control over other apps. Both use your last-created project; the floating mic needs Display over other apps permission.", 12, muted));
         TextView version = text(getString(R.string.app_version_label), 12, muted);
         version.setPadding(0, dp(20), 0, dp(12));
         content.addView(version);
@@ -2132,6 +2148,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         destroyed = true;
+        main.removeCallbacks(continueAfterOverlayHide);
         if (motionControls != null) motionControls.close();
         if (settingsDialog != null) settingsDialog.dismiss();
         if (filesDialog != null) filesDialog.dismiss();

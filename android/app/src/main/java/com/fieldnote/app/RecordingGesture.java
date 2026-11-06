@@ -2,7 +2,7 @@ package com.fieldnote.app;
 
 /** Pure gesture intent. Recording timing and media actions belong to the host. */
 public final class RecordingGesture {
-    public enum Direction { NONE, UP, LEFT, RIGHT, DOWN, MARKER }
+    public enum Direction { NONE, UP, LEFT, RIGHT, DOWN, MARKER, CLOSE }
 
     public static final int ACTIVATION_DISTANCE_DP = 112;
     public static final int HOME_RADIUS_DP = 28;
@@ -10,6 +10,7 @@ public final class RecordingGesture {
     private static final float AXIS_DOMINANCE = 1.25f;
     private final float distancePx;
     private final float homeRadiusPx;
+    private final boolean closeEnabled;
     private float startX;
     private float startY;
     private boolean pressed;
@@ -23,9 +24,15 @@ public final class RecordingGesture {
     }
 
     public RecordingGesture(float distancePx, float homeRadiusPx) {
+        this(distancePx, homeRadiusPx, false);
+    }
+
+    /** The floating host can reserve the southeast sector for closing its control. */
+    public RecordingGesture(float distancePx, float homeRadiusPx, boolean closeEnabled) {
         validateDistances(distancePx, homeRadiusPx);
         this.distancePx = distancePx;
         this.homeRadiusPx = homeRadiusPx;
+        this.closeEnabled = closeEnabled;
     }
 
     static void validateDistances(float distancePx, float homeRadiusPx) {
@@ -77,7 +84,7 @@ public final class RecordingGesture {
      * Returns the current intent. LEFT and MARKER remain active until the finger
      * returns to the small radial home region, allowing another action in the hold.
      * RIGHT ends immediately when the finger leaves its activation region; another
-     * action then requires a return home. UP and DOWN stay latched until release.
+     * action then requires a return home. UP, DOWN, and optional CLOSE stay latched until release.
      * The host observes direction transitions to start or stop its media actions.
      */
     public Direction update(float x, float y) {
@@ -86,7 +93,7 @@ public final class RecordingGesture {
         float dy = y - startY;
         if (Float.isNaN(dx) || Float.isNaN(dy) || Float.isInfinite(dx) || Float.isInfinite(dy)) return direction;
         centered = Math.hypot(dx, dy) <= homeRadiusPx;
-        if (direction == Direction.UP || direction == Direction.DOWN) return direction;
+        if (direction == Direction.UP || direction == Direction.DOWN || direction == Direction.CLOSE) return direction;
         if (direction == Direction.LEFT || direction == Direction.MARKER) {
             if (centered) {
                 direction = Direction.NONE;
@@ -104,8 +111,8 @@ public final class RecordingGesture {
             if (centered) armed = true;
             return Direction.NONE;
         }
-        Direction candidate = candidateDirection(dx, dy);
-        double distance = candidate == Direction.MARKER ? Math.hypot(dx, dy)
+        Direction candidate = candidateDirection(dx, dy, closeEnabled);
+        double distance = candidate == Direction.MARKER || candidate == Direction.CLOSE ? Math.hypot(dx, dy)
                 : candidate == Direction.LEFT || candidate == Direction.RIGHT ? Math.abs(dx)
                 : candidate == Direction.NONE ? 0 : Math.abs(dy);
         if (candidate != Direction.NONE && distance >= distancePx) activate(candidate);
@@ -113,11 +120,15 @@ public final class RecordingGesture {
     }
 
     private boolean insideVideoRegion(float dx, float dy) {
-        return dx >= distancePx && candidateDirection(dx, dy) == Direction.RIGHT;
+        return dx >= distancePx && candidateDirection(dx, dy, closeEnabled) == Direction.RIGHT;
     }
 
     /** Shared angular intent for activation and guidance; distance is applied by the caller. */
     static Direction candidateDirection(float dx, float dy) {
+        return candidateDirection(dx, dy, false);
+    }
+
+    static Direction candidateDirection(float dx, float dy, boolean closeEnabled) {
         if (Float.isNaN(dx) || Float.isNaN(dy) || Float.isInfinite(dx) || Float.isInfinite(dy)) {
             return Direction.NONE;
         }
@@ -126,6 +137,9 @@ public final class RecordingGesture {
         // Otherwise a diagonal marker could accidentally lock or start video first.
         if (dx > 0 && dy < 0 && vertical >= horizontal * .5f && vertical <= horizontal * 2) {
             return Direction.MARKER;
+        }
+        if (closeEnabled && dx > 0 && dy > 0 && vertical >= horizontal * .5f && vertical <= horizontal * 2) {
+            return Direction.CLOSE;
         }
         if (horizontal > 0 && horizontal >= vertical * AXIS_DOMINANCE) {
             return dx < 0 ? Direction.LEFT : Direction.RIGHT;

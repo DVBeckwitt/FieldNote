@@ -26,6 +26,7 @@ public final class GestureGuideView extends View {
     private static final float DIAGONAL_UNIT = (float) Math.sqrt(.5);
     private final float threshold;
     private final float homeRadius;
+    private final boolean closeEnabled;
     private final GestureGuideProgress feedback;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF bounds = new RectF();
@@ -47,11 +48,16 @@ public final class GestureGuideView extends View {
     }
 
     public GestureGuideView(Context context, float thresholdPx, float homeRadiusPx) {
+        this(context, thresholdPx, homeRadiusPx, false);
+    }
+
+    public GestureGuideView(Context context, float thresholdPx, float homeRadiusPx, boolean closeEnabled) {
         super(context);
         RecordingGesture.validateDistances(thresholdPx, homeRadiusPx);
-        feedback = new GestureGuideProgress(thresholdPx);
+        feedback = new GestureGuideProgress(thresholdPx, closeEnabled);
         threshold = thresholdPx;
         homeRadius = homeRadiusPx;
+        this.closeEnabled = closeEnabled;
         setClickable(false);
         setLongClickable(false);
         setFocusable(false);
@@ -193,6 +199,7 @@ public final class GestureGuideView extends View {
         drawDirection(canvas, RecordingGesture.Direction.UP, 0, -1);
         drawDirection(canvas, RecordingGesture.Direction.DOWN, 0, 1);
         drawDirection(canvas, RecordingGesture.Direction.MARKER, DIAGONAL_UNIT, -DIAGONAL_UNIT);
+        if (closeEnabled) drawDirection(canvas, RecordingGesture.Direction.CLOSE, DIAGONAL_UNIT, DIAGONAL_UNIT);
         drawHome(canvas);
     }
 
@@ -301,6 +308,10 @@ public final class GestureGuideView extends View {
         paint.setStrokeJoin(Paint.Join.ROUND);
         paint.setColor(color);
         switch (direction) {
+            case CLOSE:
+                canvas.drawLine(-dp(7), -dp(7), dp(7), dp(7), paint);
+                canvas.drawLine(-dp(7), dp(7), dp(7), -dp(7), paint);
+                break;
             case LEFT:
                 path.reset();
                 path.moveTo(-dp(10), -dp(6));

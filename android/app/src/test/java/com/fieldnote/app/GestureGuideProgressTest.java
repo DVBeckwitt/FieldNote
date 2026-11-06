@@ -139,6 +139,41 @@ public class GestureGuideProgressTest {
         assertState(guide.update(0, Float.POSITIVE_INFINITY, NONE, 80), NONE, 0, 0, GestureGuideProgress.Haptic.NONE);
     }
 
+    @Test public void closeGuideIsOptInAndKeepsDefaultSoutheastBehavior() {
+        GestureGuideProgress normal = new GestureGuideProgress(100);
+        GestureGuideProgress floating = new GestureGuideProgress(100, true);
+        assertState(normal.update(30, 40, NONE, 0), DOWN, .4f, 1, APPROACH);
+        assertState(floating.update(30, 40, NONE, 0), CLOSE, .5f, 2, APPROACH);
+        normal.reset();
+        assertState(normal.update(60, 60, NONE, 0), NONE, 0, 0, GestureGuideProgress.Haptic.NONE);
+    }
+
+    @Test public void closeProgressUsesRadialApproachNearAndRetreatCues() {
+        GestureGuideProgress guide = new GestureGuideProgress(100, true);
+        assertState(guide.update(15, 20, NONE, 0), CLOSE, .25f, 1, APPROACH);
+        assertState(guide.update(30, 40, NONE, 80), CLOSE, .5f, 2, APPROACH);
+        assertState(guide.update(48, 64, NONE, 160), CLOSE, .8f, 3, NEAR);
+        assertState(guide.update(29.4f, 39.2f, NONE, 240), CLOSE, .49f, 1, RETREAT);
+        assertState(guide.update(60, 80, CLOSE, 320), CLOSE, 1, 3, GestureGuideProgress.Haptic.NONE);
+        assertState(guide.update(0, 0, CLOSE, 400), CLOSE, 1, 3, GestureGuideProgress.Haptic.NONE);
+        guide.reset();
+        assertState(guide.update(15, 20, NONE, 401), CLOSE, .25f, 1, APPROACH);
+    }
+
+    @Test public void closeGuideMatchesEnabledGestureSectorBoundaries() {
+        GestureGuideProgress guide = new GestureGuideProgress(100, true);
+        float[][] points = {{30, 15}, {15, 30}, {20, 20}, {30, 14.99f}, {14.99f, 30},
+                {0, 20}, {20, 0}, {-20, 20}, {20, -20}, {0, 0}};
+        RecordingGesture.Direction[] expected = {CLOSE, CLOSE, CLOSE, RIGHT, DOWN, DOWN, RIGHT, NONE, MARKER, NONE};
+        for (int i = 0; i < points.length; i++) {
+            guide.reset();
+            float dx = points[i][0], dy = points[i][1];
+            GestureGuideProgress.State state = guide.update(dx, dy, NONE, 0);
+            assertEquals("Guide candidate at case " + i, expected[i], state.direction);
+            assertEquals(RecordingGesture.candidateDirection(dx, dy, true), state.direction);
+        }
+    }
+
     @Test public void thresholdMustBeFiniteAndPositive() {
         for (float invalid : new float[]{0, -1, Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY}) {
             assertThrows(IllegalArgumentException.class, () -> new GestureGuideProgress(invalid));

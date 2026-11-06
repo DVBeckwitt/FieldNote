@@ -141,6 +141,27 @@ public final class RecordingShortcutsInstrumentedTest {
         assertTrue(RecordingShortcuts.isOverlayIntent(independent, second));
     }
 
+    @Test public void unsupportedLauncherRejectsBothPinActionsWithoutCreatingCaptureCapabilities() {
+        assertTrue(preferences.edit().remove(RecordingShortcuts.NONCE_KEY).commit());
+        AtomicInteger serviceRequests = new AtomicInteger();
+        Context unsupported = new ContextWrapper(context) {
+            @Override public Context getApplicationContext() { return this; }
+            @Override public Object getSystemService(String name) {
+                if (Context.SHORTCUT_SERVICE.equals(name)) {
+                    serviceRequests.incrementAndGet();
+                    return null;
+                }
+                return super.getSystemService(name);
+            }
+        };
+        RecordingService.Snapshot before = RecordingService.snapshot();
+        assertFalse(RecordingShortcuts.requestPin(unsupported));
+        assertFalse(RecordingShortcuts.requestPinFloating(unsupported));
+        assertEquals(2, serviceRequests.get());
+        assertFalse("Unsupported pinning does not publish a capability", preferences.contains(RecordingShortcuts.NONCE_KEY));
+        assertSame("Pin requests cannot start a recording", before, RecordingService.snapshot());
+    }
+
     @Test public void publishingPreservesOtherShortcutsAndDoesNotRewriteCorrectMetadata() throws Exception {
         ShortcutManager manager = context.getSystemService(ShortcutManager.class);
         assertNotNull(manager);
@@ -168,14 +189,14 @@ public final class RecordingShortcutsInstrumentedTest {
             ShortcutInfo record = find(published, RecordingShortcuts.SHORTCUT_ID);
             assertNotNull("The supported launcher exposes the dynamic recording shortcut", record);
             assertEquals("Record now", record.getShortLabel().toString());
-            assertEquals("Record now", record.getLongLabel().toString());
+            assertEquals("Record now in app", record.getLongLabel().toString());
             assertTrue(record.isEnabled());
             assertTrue(RecordingShortcuts.isRecordIntent(context, record.getIntent()));
             assertEquals(new ComponentName(context, MainActivity.class), record.getActivity());
             ShortcutInfo floating = find(published, RecordingShortcuts.FLOATING_SHORTCUT_ID);
             assertNotNull("The second shortcut is published when the launcher has capacity", floating);
             assertEquals("Floating mic", floating.getShortLabel().toString());
-            assertEquals("Floating mic", floating.getLongLabel().toString());
+            assertEquals("Show floating mic", floating.getLongLabel().toString());
             assertTrue(RecordingShortcuts.isOverlayIntent(context, floating.getIntent()));
             assertNotNull(find(published, otherId));
             Set<String> ids = new HashSet<>();

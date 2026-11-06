@@ -20,16 +20,22 @@ public final class GestureGuideProgress {
 
     private static final long HAPTIC_INTERVAL_MS = 80;
     private final float thresholdPx;
+    private final boolean closeEnabled;
     private RecordingGesture.Direction previousDirection = RecordingGesture.Direction.NONE;
     private int previousLevel;
     private boolean emitted;
     private long lastHapticMs;
 
     public GestureGuideProgress(float thresholdPx) {
+        this(thresholdPx, false);
+    }
+
+    public GestureGuideProgress(float thresholdPx, boolean closeEnabled) {
         if (!(thresholdPx > 0) || Float.isInfinite(thresholdPx)) {
             throw new IllegalArgumentException("Guide threshold must be a positive finite value.");
         }
         this.thresholdPx = thresholdPx;
+        this.closeEnabled = closeEnabled;
     }
 
     /** Begin a new press, including a fresh haptic interval. */
@@ -52,8 +58,9 @@ public final class GestureGuideProgress {
             return new State(activated, 1, 3, Haptic.NONE);
         }
 
-        RecordingGesture.Direction direction = RecordingGesture.candidateDirection(dx, dy);
-        float distance = direction == RecordingGesture.Direction.MARKER ? (float) Math.hypot(dx, dy)
+        RecordingGesture.Direction direction = RecordingGesture.candidateDirection(dx, dy, closeEnabled);
+        float distance = direction == RecordingGesture.Direction.MARKER || direction == RecordingGesture.Direction.CLOSE
+                ? (float) Math.hypot(dx, dy)
                 : direction == RecordingGesture.Direction.LEFT || direction == RecordingGesture.Direction.RIGHT
                 ? Math.abs(dx) : direction == RecordingGesture.Direction.NONE ? 0 : Math.abs(dy);
         float progress = Math.min(1, distance / thresholdPx);

@@ -45,6 +45,7 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
 import android.widget.Toast;
 
 import org.json.JSONObject;
@@ -64,6 +65,7 @@ public final class FloatingRecorderService extends Service {
     private static final int NOTIFICATION_ID = 1002;
     private static final int SETUP_NOTIFICATION_ID = 1003;
     private static final int MIC_SIZE_DP = 96;
+    private static final int COMPACT_SIZE_DP = 160;
     private static final int GESTURE_SIZE_DP = 336;
     private static final long HOLD_DELAY_MS = 180;
     // A non-exported service additionally rejects arbitrary/replayed process launches.
@@ -83,6 +85,7 @@ public final class FloatingRecorderService extends Service {
     private WindowManager.LayoutParams micWindow;
     private FrameLayout surface, preview;
     private MicrophoneView microphone;
+    private ImageButton moveHandle;
     private GestureGuideView guide;
     private RecordingGesture gesture;
     private InlineCamera camera;
@@ -91,6 +94,9 @@ public final class FloatingRecorderService extends Service {
     private CaptureRef heldCapture, pendingText, pendingVideo, markerCapture;
     private boolean touching, touchClick, stopOnRelease, startedByTouch;
     private int touchPointerId = -1;
+    private int movePointerId = -1, moveStartX, moveStartY;
+    private boolean moving, moveDragged;
+    private float moveDownX, moveDownY;
     private boolean destroyed, closing, receiverRegistered, previewAttached, textSaving;
     private boolean foregroundReady, cameraForeground, dark;
     private boolean widgetAdmission, widgetCameraAdmission, widgetResolving;
@@ -127,7 +133,8 @@ public final class FloatingRecorderService extends Service {
     /** Main-thread handoff gate, including a video that owns an embedded microphone track. */
     public static boolean isBusyForHandoff() {
         FloatingRecorderService service = active;
-        return service != null && (isCameraBusy() || service.textDialog != null || service.pendingText != null || service.textSaving);
+        return service != null && (service.widgetResolving || service.moving || isCameraBusy()
+                || service.textDialog != null || service.pendingText != null || service.textSaving);
     }
 
     /** Hiding preserves an explicitly locked audio recording, which has its own notification. */
@@ -283,11 +290,11 @@ public final class FloatingRecorderService extends Service {
         int panel = Color.parseColor(dark ? "#172943" : "#E7F0FF");
         int accent = Color.parseColor(dark ? "#91C5FF" : "#2C68B2");
         int recordingColor = Color.parseColor(dark ? "#3E75FF" : "#1648C8");
-        gesture = new RecordingGesture(dp(RecordingGesture.ACTIVATION_DISTANCE_DP), dp(RecordingGesture.HOME_RADIUS_DP));
+        gesture = new RecordingGesture(dp(RecordingGesture.ACTIVATION_DISTANCE_DP), dp(RecordingGesture.HOME_RADIUS_DP), true);
         surface = new FrameLayout(visualContext);
         surface.setClipChildren(false);
         surface.setClipToPadding(false);
-        guide = new GestureGuideView(visualContext, dp(RecordingGesture.ACTIVATION_DISTANCE_DP), dp(RecordingGesture.HOME_RADIUS_DP));
+        guide = new GestureGuideView(visualContext, dp(RecordingGesture.ACTIVATION_DISTANCE_DP), dp(RecordingGesture.HOME_RADIUS_DP), true);
         guide.configureColors(accent, Color.parseColor(dark ? "#0C1627" : "#F7FAFF"), ink);
         surface.addView(guide, new FrameLayout.LayoutParams(-1, -1));
         microphone = new MicrophoneView(visualContext, dark, panel, accent, recordingColor, new MicrophoneView.ActionListener() {
@@ -301,16 +308,33 @@ public final class FloatingRecorderService extends Service {
         microphone.setFocusable(true);
         microphone.setOnTouchListener(this::recordTouch);
         microphone.setOnClickListener(view -> {
-            if (touchClick || !captureAllowed()) return;
+            if (touchClick || moving || !captureAllowed()) return;
             RecordingService.Snapshot capture = RecordingService.snapshot();
             if (RecordingService.isRecording() && sameProject(capture)) stopCapture(CaptureRef.of(capture));
             else if (canStartAudio()) { startAudio(); RecordingService.lock(this); }
         });
         surface.addView(microphone, new FrameLayout.LayoutParams(dp(MIC_SIZE_DP), dp(MIC_SIZE_DP), Gravity.CENTER));
+        moveHandle = new ImageButton(visualContext);
+        moveHandle.setId(R.id.floating_move_handle);
+        moveHandle.setImageResource(R.drawable.ic_move_handle);
+        moveHandle.setImageTintList(android.content.res.ColorStateList.valueOf(accent));
+        moveHandle.setContentDescription("Move floating microphone");
+        moveHandle.setTooltipText("Drag to move");
+        moveHandle.setPadding(dp(12), dp(4), dp(12), dp(4));
+        android.graphics.drawable.GradientDrawable grip = new android.graphics.drawable.GradientDrawable();
+        grip.setColor(panel);
+        grip.setCornerRadius(dp(16));
+        grip.setStroke(dp(1), accent);
+        moveHandle.setBackground(new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(0x3391c5ff), grip, null));
+        moveHandle.setOnTouchListener(this::moveTouch);
+        moveHandle.setOnClickListener(view -> toast("Drag this handle to move the microphone. Swipe the mic down-right to close."));
+        moveHandle.setTranslationY(-dp(64));
+        surface.addView(moveHandle, new FrameLayout.LayoutParams(dp(48), dp(32), Gravity.CENTER));
         measurePosition();
-        micWindow = overlayParams(dp(MIC_SIZE_DP), dp(MIC_SIZE_DP));
+        micWindow = overlayParams(dp(COMPACT_SIZE_DP), dp(COMPACT_SIZE_DP));
         micWindow.setTitle("Fieldnote floating microphone");
-        placeMicWindow(dp(MIC_SIZE_DP));
+        placeMicWindow(dp(COMPACT_SIZE_DP));
         windows.addView(surface, micWindow);
         showing = true;
         preview = new FrameLayout(visualContext);
@@ -374,9 +398,85 @@ public final class FloatingRecorderService extends Service {
     }
 
     private void placeMicWindow(int size) {
-        micWindow.width = micWindow.height = size;
-        micWindow.x = centerX - size / 2;
+        // Keep the idle hit area narrow so transparent space beside the handle
+        // does not cover unrelated launcher icons. Gesture mode remains square.
+        micWindow.width = size == dp(COMPACT_SIZE_DP) ? dp(MIC_SIZE_DP) : size;
+        micWindow.height = size;
+        micWindow.x = centerX - micWindow.width / 2;
         micWindow.y = centerY - size / 2;
+    }
+
+    /** Moving has its own hit target and pointer; it never starts or transfers a mic hold. */
+    private boolean moveTouch(View view, MotionEvent event) {
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            if (!captureAllowed() || touching || cameraWorkPending() || pendingVideo != null
+                    || textDialog != null || pendingText != null || textSaving) return true;
+            main.removeCallbacks(contractGesture);
+            moving = true;
+            moveDragged = false;
+            movePointerId = event.getPointerId(event.getActionIndex());
+            moveDownX = event.getRawX();
+            moveDownY = event.getRawY();
+            moveStartX = centerX;
+            moveStartY = centerY;
+            view.setPressed(true);
+            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+            return true;
+        }
+        if (!moving) return true;
+        if (action == MotionEvent.ACTION_MOVE) {
+            int pointer = event.findPointerIndex(movePointerId);
+            if (pointer < 0) { finishMove(view, true); return true; }
+            float rawX = event.getRawX() + event.getX(pointer) - event.getX();
+            float rawY = event.getRawY() + event.getY(pointer) - event.getY();
+            float dx = rawX - moveDownX, dy = rawY - moveDownY;
+            moveDragged |= Math.hypot(dx, dy) > android.view.ViewConfiguration.get(this).getScaledTouchSlop();
+            Rect available = screenBounds();
+            int half = gestureSizePx / 2;
+            centerX = Math.max(half, Math.min(available.width() - half, moveStartX + Math.round(dx)));
+            centerY = Math.max(half, Math.min(available.height() - half, moveStartY + Math.round(dy)));
+            updateMicPosition();
+        } else if (action == MotionEvent.ACTION_CANCEL) {
+            finishMove(view, true);
+        } else if ((action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP)
+                && event.getPointerId(event.getActionIndex()) == movePointerId) {
+            finishMove(view, false);
+        }
+        return true;
+    }
+
+    private void finishMove(View view, boolean cancelled) {
+        moving = false;
+        movePointerId = -1;
+        view.setPressed(false);
+        if (cancelled) {
+            centerX = moveStartX;
+            centerY = moveStartY;
+        } else {
+            Rect available = screenBounds();
+            int half = gestureSizePx / 2;
+            int spanX = available.width() - gestureSizePx, spanY = available.height() - gestureSizePx;
+            preferences.edit().putFloat("floating_position_x", spanX > 0 ? (float) (centerX - half) / spanX : .5f)
+                    .putFloat("floating_position_y", spanY > 0 ? (float) (centerY - half) / spanY : .5f).apply();
+        }
+        updateMicPosition();
+        main.post(contractGesture);
+        if (!cancelled && !moveDragged) view.performClick();
+    }
+
+    private void updateMicPosition() {
+        if (closing || destroyed || surface == null) return;
+        placeMicWindow(micWindow.height);
+        try { windows.updateViewLayout(surface, micWindow); }
+        catch (RuntimeException failure) { dismissOverlay(false); }
+    }
+
+    private float positionFraction(String key, float fallback) {
+        Object value = preferences.getAll().get(key);
+        if (!(value instanceof Float)) return fallback;
+        float fraction = (Float) value;
+        return Float.isNaN(fraction) || Float.isInfinite(fraction) ? fallback : Math.max(0, Math.min(1, fraction));
     }
 
     private void expandGesture() {
@@ -387,8 +487,8 @@ public final class FloatingRecorderService extends Service {
     }
 
     private final Runnable contractGesture = () -> {
-        if (destroyed || closing || touching || surface == null) return;
-        placeMicWindow(dp(MIC_SIZE_DP));
+        if (destroyed || closing || touching || moving || surface == null) return;
+        placeMicWindow(dp(COMPACT_SIZE_DP));
         try { windows.updateViewLayout(surface, micWindow); }
         catch (RuntimeException failure) { dismissOverlay(false); }
     };
@@ -403,7 +503,7 @@ public final class FloatingRecorderService extends Service {
     private boolean recordTouch(View view, MotionEvent event) {
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
-                if (!captureAllowed() || textDialog != null || textSaving) return true;
+                if (!captureAllowed() || moving || textDialog != null || textSaving) return true;
                 RecordingService.Snapshot capture = RecordingService.snapshot();
                 if (capture.state == RecordingService.State.PAUSED && sameProject(capture)) {
                     openText(capture.projectUri, capture.entryId, CaptureRef.of(capture)); return true;
@@ -492,7 +592,9 @@ public final class FloatingRecorderService extends Service {
         if (direction == before || direction == RecordingGesture.Direction.NONE) return;
         main.removeCallbacks(beginHeldRecording);
         microphone.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-        if (direction == RecordingGesture.Direction.UP) {
+        if (direction == RecordingGesture.Direction.CLOSE) {
+            dismissOverlay(true);
+        } else if (direction == RecordingGesture.Direction.UP) {
             if (!RecordingService.isRecording() && canStartAudio()) {
                 startAudio(); startedByTouch = true; heldCapture = CaptureRef.of(RecordingService.snapshot());
             }
@@ -515,7 +617,7 @@ public final class FloatingRecorderService extends Service {
     private boolean sameProject(RecordingService.Snapshot capture) { return project != null && project.equals(capture.projectUri); }
     private boolean cameraWorkPending() { return !photos.isEmpty() || (camera != null && camera.isBusy()); }
     private boolean canStartAudio() {
-        return captureAllowed() && !RecordingService.isBusy() && !cameraWorkPending() && pendingVideo == null
+        return captureAllowed() && !moving && !RecordingService.isBusy() && !cameraWorkPending() && pendingVideo == null
                 && textDialog == null && pendingText == null && !textSaving
                 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
     }
@@ -860,6 +962,8 @@ public final class FloatingRecorderService extends Service {
         ++widgetGeneration;
         widgetResolving = false;
         showing = false;
+        moving = false;
+        movePointerId = -1;
         touching = false;
         touchPointerId = -1;
         heldCapture = null;
@@ -948,8 +1052,12 @@ public final class FloatingRecorderService extends Service {
         gestureSizePx = Math.min(dp(GESTURE_SIZE_DP), Math.min(available.width(), available.height()));
         if (gestureSizePx < dp(2 * (RecordingGesture.ACTIVATION_DISTANCE_DP + GestureGuideView.TARGET_OUTSET_DP)))
             throw new IllegalStateException("The display is too small for the floating microphone gestures.");
-        centerX = available.width() / 2;
-        centerY = Math.max(gestureSizePx / 2, available.height() - gestureSizePx / 2 - dp(40));
+        int half = gestureSizePx / 2;
+        int spanX = Math.max(0, available.width() - gestureSizePx);
+        int spanY = Math.max(0, available.height() - gestureSizePx);
+        float fallbackY = spanY == 0 ? .5f : Math.max(0, 1f - (float) dp(40) / spanY);
+        centerX = half + Math.round(positionFraction("floating_position_x", .5f) * spanX);
+        centerY = half + Math.round(positionFraction("floating_position_y", fallbackY) * spanY);
     }
 
     @Override public void onConfigurationChanged(Configuration configuration) {
@@ -962,6 +1070,8 @@ public final class FloatingRecorderService extends Service {
         if (touching && heldCapture != null && !RecordingService.snapshot().locked) stopCapture(heldCapture);
         touching = false;
         touchPointerId = -1;
+        moving = false;
+        movePointerId = -1;
         heldCapture = null;
         microphone.home();
         guide.finish();
@@ -970,7 +1080,7 @@ public final class FloatingRecorderService extends Service {
         if (camera != null && camera.isBusy()) camera.releaseHardware();
         try {
             measurePosition();
-            placeMicWindow(dp(MIC_SIZE_DP));
+            placeMicWindow(dp(COMPACT_SIZE_DP));
             windows.updateViewLayout(surface, micWindow);
         } catch (RuntimeException failure) { dismissOverlay(false); }
     }

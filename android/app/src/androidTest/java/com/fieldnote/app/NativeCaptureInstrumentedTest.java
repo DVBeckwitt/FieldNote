@@ -382,8 +382,9 @@ public final class NativeCaptureInstrumentedTest {
         Uri narration = store.mediaUri(projectUri, audio.getString("path"));
         assertEncodedAudio(narration);
         long encoded = encodedDuration(narration);
-        assertTrue("Encoded audio retains the held span, allowing encoder startup tolerance", encoded >= elapsedAtRelease[0] - 500);
-        assertTrue("Encoded audio excludes the later photo queue wait, allowing frame padding", encoded <= elapsedAtRelease[0] + 500);
+        String durations = "; encoded=" + encoded + "ms, held=" + elapsedAtRelease[0] + "ms, capture=" + captureDuration + "ms";
+        assertTrue("Encoded audio retains the held span, allowing encoder startup tolerance" + durations, encoded >= elapsedAtRelease[0] - 500);
+        assertTrue("Encoded audio excludes the later photo queue wait, allowing frame padding" + durations, encoded <= elapsedAtRelease[0] + 500);
         ProjectStore reopened = new ProjectStore(context);
         assertEquals(projectUri, reopened.currentProject());
         JSONObject preserved = reopened.readProject(projectUri).getJSONArray("entries").getJSONObject(0);
@@ -3427,7 +3428,7 @@ public final class NativeCaptureInstrumentedTest {
     }
 
     private void saveScreenshot(String name) throws IOException {
-        name = "beta21-final-" + name;
+        name = "beta22-final-" + name;
         awaitScreenshotMainTurn();
         // Held feedback intentionally keeps drawing. A fully idle UI is neither required
         // nor a bounded condition here. Behavior is established by each test's assertions;

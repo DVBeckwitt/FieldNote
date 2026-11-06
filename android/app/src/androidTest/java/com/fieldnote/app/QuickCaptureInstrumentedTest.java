@@ -15,8 +15,10 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.provider.DocumentsContract;
+import android.provider.Settings;
 import android.util.AtomicFile;
 import android.view.WindowManager;
 
@@ -34,7 +36,9 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.io.File;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -53,6 +57,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Real launch/service/AAC evidence. Activity-cold launches do not simulate process death. */
 @RunWith(AndroidJUnit4.class)
@@ -70,11 +76,15 @@ public final class QuickCaptureInstrumentedTest {
     private volatile MainActivity activity;
     private ActivityLifecycleCallback lifecycle;
     private Object acceptedRecordingToken;
+    private boolean overlayRequested;
+    private String priorOverlayMode;
+    private FloatingRecorderService ownedOverlay;
 
     @Before public void setUp() throws Exception {
         instrumentation = InstrumentationRegistry.getInstrumentation();
         context = instrumentation.getTargetContext();
         assertFalse("Do not take over an existing recording", RecordingService.isBusy());
+        assertFalse("Do not take over an existing floating recorder", FloatingRecorderService.isShowing());
         acceptedRecordingToken = readField(RecordingService.snapshot(), "token");
         // Initialize the authenticated launcher key before snapshotting preferences.
         RecordingShortcuts.recordIntent(context);
@@ -116,6 +126,13 @@ public final class QuickCaptureInstrumentedTest {
         if (context == null) return;
         try {
             finishOwnedActivities(); // Cancels unresolved requests before restoring preferences.
+            if (overlayRequested) {
+                onMain(() -> FloatingRecorderService.hide(context));
+                await("the owned floating host finishes before fixture cleanup", 15_000,
+                        () -> activeOverlay() == null);
+                if (ownedOverlay != null) await("the owned overlay reader finishes", 15_000,
+                        () -> ((ExecutorService) readField(ownedOverlay, "io")).isTerminated());
+            }
             RecordingService.Snapshot capture = RecordingService.snapshot();
             if (ownedProjects.contains(capture.projectUri) && RecordingService.isBusy()) {
                 onMain(() -> RecordingService.stop(context));
@@ -136,6 +153,8 @@ public final class QuickCaptureInstrumentedTest {
                 onMain(() -> ActivityLifecycleMonitorRegistry.getInstance().removeLifecycleCallback(lifecycle));
             if (bookmarks != null && priorBookmarks != null) restore(bookmarks, priorBookmarks);
             if (preferences != null && priorPreferences != null) restore(preferences, priorPreferences);
+            if (priorOverlayMode != null)
+                shell("appops set " + ownPackage() + " SYSTEM_ALERT_WINDOW " + priorOverlayMode);
             TestDocumentsProvider.clearFailures();
         }
     }
@@ -149,6 +168,7 @@ public final class QuickCaptureInstrumentedTest {
                 .putExtra("projectUri", older.toString()).putExtra("entryId", oldEntry);
         launch(record);
         RecordingService.Snapshot capture = awaitLockedRecording();
+        assertFalse("Record now starts on the static main screen", FloatingRecorderService.isShowing());
         assertEquals(latest, capture.projectUri);
         assertNotEquals(oldEntry, capture.entryId);
         assertEquals(latest, store.lastCreatedProject());
@@ -156,6 +176,54 @@ public final class QuickCaptureInstrumentedTest {
         assertEquals(0, audioCount(store.readProject(older)));
         assertEquals(0, entry(store.readProject(older), oldEntry).getJSONArray("media").length());
         assertEquals(1, audioCount(store.readProject(latest)));
+    }
+
+    @Test public void recordNowClosesIdleOverlayBeforeStartingStaticAudioInLatestProject() throws Exception {
+        Uri overlayProject = createProject("Idle floating project");
+        Uri latest = createProject("New static recording project");
+        store.setCurrentProject(overlayProject);
+        launch(ordinaryIntent());
+        awaitSettled();
+        showOwnedOverlay(overlayProject);
+        assertFalse(RecordingService.isBusy());
+
+        launchRecordAndAwaitDelivery();
+        RecordingService.Snapshot capture = awaitLockedRecording();
+        awaitSettled();
+        await("static recording dismisses the floating host", 10_000, () -> activeOverlay() == null);
+        assertFalse(FloatingRecorderService.isShowing());
+        assertEquals(latest, capture.projectUri);
+        assertTrue(isFocused());
+        stopAndVerify(capture);
+        assertEquals(0, audioCount(store.readProject(overlayProject)));
+        assertEquals(1, audioCount(store.readProject(latest)));
+    }
+
+    @Test public void recordNowMovesLockedOverlayAudioToStaticModeWithoutRestartingIt() throws Exception {
+        Uri original = createProject("Existing floating original");
+        launch(ordinaryIntent());
+        awaitSettled();
+        showOwnedOverlay(original);
+        onMain(() -> {
+            RecordingService.start(activity, original, UUID.randomUUID().toString());
+            RecordingService.lock(activity);
+        });
+        RecordingService.Snapshot before = awaitLockedRecording();
+        awaitRecordableDuration();
+        Uri newer = createProject("Created after the active original");
+
+        launchRecordAndAwaitDelivery();
+        awaitSettled();
+        await("locked audio hands off to the static main screen", 10_000, () -> activeOverlay() == null);
+        assertFalse(FloatingRecorderService.isShowing());
+        assertTrue(isFocused());
+        assertSameCapture(before, RecordingService.snapshot());
+        launchRecordAndAwaitDelivery();
+        awaitSettled();
+        assertSameCapture(before, RecordingService.snapshot());
+        stopAndVerify(before);
+        assertEquals(1, audioCount(store.readProject(original)));
+        assertEquals(0, audioCount(store.readProject(newer)));
     }
 
     @Test public void warmRecordNowClearsAttachmentAndDuplicateLaunchesKeepRecordingIdentity() throws Exception {
@@ -433,6 +501,47 @@ public final class QuickCaptureInstrumentedTest {
 
     private String addText(Uri project, String text) throws Exception {
         return store.saveText(project, null, text, null).getString("id");
+    }
+
+    private void showOwnedOverlay(Uri project) throws Exception {
+        assertTrue(ownedProjects.contains(project));
+        assertNull(activeOverlay());
+        String appOps = shell("appops get " + ownPackage() + " SYSTEM_ALERT_WINDOW");
+        Matcher mode = Pattern.compile("(?m)^\\s*SYSTEM_ALERT_WINDOW:\\s*(allow|ignore|deny|default|foreground)\\b").matcher(appOps);
+        priorOverlayMode = mode.find() ? mode.group(1) : "default";
+        shell("appops set " + ownPackage() + " SYSTEM_ALERT_WINDOW allow");
+        await("the test app receives overlay permission", 5_000, () -> Settings.canDrawOverlays(context));
+        onMain(() -> {
+            assertTrue(FloatingRecorderService.show(activity, project));
+            overlayRequested = true;
+        });
+        await("the owned floating microphone is visible", 10_000,
+                () -> FloatingRecorderService.isShowing() && activeOverlay() != null);
+        ownedOverlay = activeOverlay();
+        assertEquals(project, readField(ownedOverlay, "project"));
+    }
+
+    private FloatingRecorderService activeOverlay() throws Exception {
+        Field active = FloatingRecorderService.class.getDeclaredField("active");
+        active.setAccessible(true);
+        return (FloatingRecorderService) active.get(null);
+    }
+
+    private String ownPackage() {
+        String name = context.getPackageName();
+        assertTrue(name.matches("[A-Za-z0-9_.]+"));
+        return name;
+    }
+
+    private String shell(String command) throws IOException {
+        ParcelFileDescriptor output = instrumentation.getUiAutomation().executeShellCommand(command);
+        try (InputStream input = new ParcelFileDescriptor.AutoCloseInputStream(output);
+             ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) != -1) bytes.write(buffer, 0, count);
+            return new String(bytes.toByteArray(), StandardCharsets.UTF_8);
+        }
     }
 
     private Intent ordinaryIntent() {
