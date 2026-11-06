@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- A foreign-UID RemoteViews host used only by the test APK. Never shipped. -->
+        <activity android:name="com.fieldnote.widgettest.WidgetHostActivity"
+            android:exported="true" android:launchMode="singleTop"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    </application>
+</manifest>

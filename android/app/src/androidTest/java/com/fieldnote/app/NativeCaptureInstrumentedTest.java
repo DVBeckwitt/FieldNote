@@ -3238,7 +3238,7 @@ public final class NativeCaptureInstrumentedTest {
     }
 
     private void saveScreenshot(String name) throws IOException {
-        name = "beta18-final-" + name;
+        name = "beta19-final-" + name;
         awaitScreenshotMainTurn();
         // Held feedback intentionally keeps drawing. A fully idle UI is neither required
         // nor a bounded condition here. Behavior is established by each test's assertions;

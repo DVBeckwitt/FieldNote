@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class RecordingShortcuts {
     public static final String ACTION_RECORD = "com.fieldnote.app.action.RECORD_NOW";
     public static final String ACTION_FLOATING = "com.fieldnote.app.action.FLOATING_MIC";
+    public static final String ACTION_WIDGET_FLOATING = "com.fieldnote.app.action.WIDGET_FLOATING_MIC";
     static final String SHORTCUT_ID = "record-now";
     static final String FLOATING_SHORTCUT_ID = "floating-mic";
     static final String NONCE_KEY = "record_shortcut_nonce_v1";
@@ -67,6 +68,22 @@ public final class RecordingShortcuts {
         return launchIntent(context, ACTION_FLOATING);
     }
 
+    /** A reusable widget capability; its identity survives process recreation. */
+    public static Intent widgetIntent(Context context) {
+        Intent intent = new Intent(context, FloatingRecorderService.class);
+        try {
+            return intent.setAction(ACTION_WIDGET_FLOATING).putExtra(EXTRA_NONCE, nonce(context));
+        } catch (RuntimeException unavailable) {
+            Log.w("FieldnoteShortcuts", "Widget authentication is unavailable.");
+            return intent; // The private service rejects an unauthenticated request.
+        }
+    }
+
+    public static boolean isWidgetIntent(Context context, Intent intent) {
+        return authenticated(context, intent, ACTION_WIDGET_FLOATING,
+                new ComponentName(context, FloatingRecorderService.class));
+    }
+
     private static Intent launchIntent(Context context, String action) {
         Intent intent = new Intent(context, MainActivity.class).addFlags(LAUNCH_FLAGS);
         try {
@@ -87,9 +104,13 @@ public final class RecordingShortcuts {
     }
 
     private static boolean authenticated(Context context, Intent intent, String action) {
+        return authenticated(context, intent, action, new ComponentName(context, MainActivity.class));
+    }
+
+    private static boolean authenticated(Context context, Intent intent, String action, ComponentName target) {
         if (intent == null || !action.equals(intent.getAction())
                 || (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
-                || !new ComponentName(context, MainActivity.class).equals(intent.getComponent())) return false;
+                || !target.equals(intent.getComponent())) return false;
         try {
             Object expected = preferences(context).getAll().get(NONCE_KEY);
             return validNonce(expected) && expected.equals(intent.getStringExtra(EXTRA_NONCE));

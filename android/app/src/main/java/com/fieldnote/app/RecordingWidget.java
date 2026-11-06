@@ -6,11 +6,28 @@ import android.appwidget.AppWidgetProvider;
 import android.appwidget.AppWidgetProviderInfo;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
 import android.util.Log;
 import android.widget.RemoteViews;
 
-/** A launcher button only. MainActivity owns permissions and the actual floating microphone. */
+/** Shows the interactive overlay directly over the launcher; setup remains in MainActivity. */
 public final class RecordingWidget extends AppWidgetProvider {
+    @Override public void onReceive(Context context, Intent intent) {
+        super.onReceive(context, intent);
+        if (Intent.ACTION_MY_PACKAGE_REPLACED.equals(intent.getAction())) refresh(context);
+    }
+
+    /** Replaces existing launcher bindings after an APK update. */
+    static void refresh(Context context) {
+        try {
+            AppWidgetManager manager = AppWidgetManager.getInstance(context);
+            new RecordingWidget().onUpdate(context, manager,
+                    manager.getAppWidgetIds(new ComponentName(context, RecordingWidget.class)));
+        } catch (RuntimeException unavailable) {
+            Log.w("FieldnoteWidget", "The launcher widget could not be refreshed after the update.");
+        }
+    }
+
     @Override public void onUpdate(Context context, AppWidgetManager manager, int[] ids) {
         ComponentName provider = new ComponentName(context, RecordingWidget.class);
         try {
@@ -26,7 +43,7 @@ public final class RecordingWidget extends AppWidgetProvider {
 
     static RemoteViews views(Context context) {
         RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.widget_mic);
-        PendingIntent open = PendingIntent.getActivity(context, 61, RecordingShortcuts.overlayIntent(context),
+        PendingIntent open = PendingIntent.getForegroundService(context, 61, RecordingShortcuts.widgetIntent(context),
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         views.setOnClickPendingIntent(R.id.widget_mic_button, open);
         return views;

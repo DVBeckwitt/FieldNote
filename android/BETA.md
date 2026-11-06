@@ -1,24 +1,23 @@
-# Fieldnote 0.2.0-beta.18
+# Fieldnote 0.2.0-beta.19
 
-Android beta (version code 19) for Android 8.0 and later.
+Android beta (version code 20) for Android 8.0 and later.
 No Google services are needed; no network permission is requested.
 Root access is neither needed nor used.
 
 ## Install
 
-Download the APK from the [beta 18 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.18).
+Download the APK from the [beta 19 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.19).
 Transfer it to the phone and open it from Files. If prompted, allow that
 installer source to install apps, then complete installation. This personal beta
 uses the local signing certificate; updates over earlier betas must use the same
 certificate. Keep the existing app installed to preserve its permissions,
 settings, and any pending captures.
 
-Beta 18 fixes note editing during slow saves: text, name, and tags are locked
-while the submitted note is saving, then become editable again if saving fails.
-This prevents later typing from being silently discarded when the save completes.
-Shake once still starts audio and another shake stops it while Record is open.
-Touch gestures, home-screen shortcuts, the floating microphone, and background
-ZIP saving remain available.
+Beta 19 launches the floating microphone directly from its home-screen widget,
+without opening Fieldnote after setup. Hold and swipe on the control over your
+launcher to capture into the latest-created project. Existing widgets are
+refreshed when the app is updated. Shake start/stop in Record, touch gestures,
+and background ZIP saving remain available.
 The [validation summary](../docs/VALIDATION.md) records the checks and their limits.
 See [Building Fieldnote](BUILDING.md) to build or test from source.
 
@@ -113,14 +112,21 @@ soon as the project and microphone permission are ready. Tap the microphone
 to stop and save. It does not require holding the shortcut. An already-running
 recording keeps its existing lock state.
 
-Tapping the **Floating mic** widget opens the floating control without starting
-a new recording. On first use, allow **Display over other apps** (sometimes
-called **Draw over other apps**) in Android Settings, then grant microphone
-and camera access when requested. Camera access is required on phones with a
-camera so the floating media gestures can work. Root access is not needed.
-The app moves to the background, leaving the microphone over your other apps.
-Hold and swipe on this floating microphone; the home-screen widget itself is
-only the button that opens it.
+First, open Fieldnote, create a project, then use **Settings > Show floating mic**
+to finish setup. Allow **Display over other apps** (sometimes called **Draw over
+other apps**) and grant microphone and camera access when requested. Camera
+access is required on phones with a camera so the media gestures work. Root
+access is not needed.
+
+After setup, tapping the **Floating mic** widget shows the control directly over
+Smart Launcher or your other home launcher, without opening Fieldnote or starting
+a recording. Hold and swipe on that microphone to capture. Android widgets have
+[gesture limitations](https://developer.android.com/develop/ui/views/appwidgets/overview#gestures)
+that prevent hosting the complete drag control, so the widget activates the interactive overlay.
+If setup is missing, the widget stays on the home screen and explains what is
+needed; tap its setup notification or open Fieldnote to finish setup. An update
+refreshes existing widgets. If your launcher keeps an old widget action cached, remove
+and re-add **Floating mic** from its widget picker.
 
 The floating mic uses the same touch actions: hold to record, release to save,
 up to lock, left for a linked photo, right for video, down for text, and diagonally

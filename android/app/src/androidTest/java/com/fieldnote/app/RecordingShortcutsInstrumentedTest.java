@@ -220,7 +220,7 @@ public final class RecordingShortcutsInstrumentedTest {
         assertNull("A mic-only widget has no configuration Activity", found.configure);
     }
 
-    @Test public void widgetContainsOnlyTheMicAndClickUsesAnImmutableOverlayActivityIntent() {
+    @Test public void widgetContainsOnlyTheMicAndClickUsesAnImmutableForegroundServiceIntent() {
         AtomicInteger clicks = new AtomicInteger();
         AtomicReference<IntentSender> sent = new AtomicReference<>();
         Context intercepted = new ContextWrapper(context) {
@@ -243,16 +243,57 @@ public final class RecordingShortcutsInstrumentedTest {
             assertTrue(microphone.performClick());
         });
         assertEquals("The native RemoteViews click is intercepted without launching Main", 1, clicks.get());
-        PendingIntent expected = PendingIntent.getActivity(context, 61, RecordingShortcuts.overlayIntent(context),
+        PendingIntent expected = PendingIntent.getForegroundService(context, 61, RecordingShortcuts.widgetIntent(context),
                 PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE);
         assertNotNull(expected);
         assertEquals(context.getPackageName(), expected.getCreatorPackage());
         if (Build.VERSION.SDK_INT >= 31) {
             assertTrue(expected.isImmutable());
-            assertTrue(expected.isActivity());
+            assertTrue(expected.isForegroundService());
+            assertFalse(expected.isActivity());
         }
         assertEquals(expected.getIntentSender(), sent.get());
         assertSame("Inspecting and clicking the widget fixture cannot start a capture", before, RecordingService.snapshot());
+    }
+
+    @Test public void widgetCapabilityIsPersistentExplicitAndDoesNotChooseAProject() {
+        Intent widget = RecordingShortcuts.widgetIntent(context);
+        assertTrue(RecordingShortcuts.isWidgetIntent(context, widget));
+        assertFalse(RecordingShortcuts.isRecordIntent(context, widget));
+        assertFalse(RecordingShortcuts.isOverlayIntent(context, widget));
+        assertEquals(new ComponentName(context, FloatingRecorderService.class), widget.getComponent());
+        assertEquals(RecordingShortcuts.ACTION_WIDGET_FLOATING, widget.getAction());
+        assertEquals(0, widget.getFlags());
+        assertNull(widget.getData());
+        assertNull(widget.getClipData());
+        assertEquals(Collections.singleton(RecordingShortcuts.EXTRA_NONCE), widget.getExtras().keySet());
+        String persisted = preferences.getString(RecordingShortcuts.NONCE_KEY, null);
+        assertEquals(persisted, widget.getStringExtra(RecordingShortcuts.EXTRA_NONCE));
+        Intent reconstructed = new Intent(context, FloatingRecorderService.class)
+                .setAction(RecordingShortcuts.ACTION_WIDGET_FLOATING)
+                .putExtra(RecordingShortcuts.EXTRA_NONCE, persisted);
+        assertTrue("Validation depends on durable preferences, not a process admission token",
+                RecordingShortcuts.isWidgetIntent(context, reconstructed));
+    }
+
+    @Test public void widgetRejectsWrongCapabilityComponentActionAndMalformedNonce() {
+        Intent widget = RecordingShortcuts.widgetIntent(context);
+        assertFalse(RecordingShortcuts.isWidgetIntent(context, null));
+        Intent missing = new Intent(widget);
+        missing.removeExtra(RecordingShortcuts.EXTRA_NONCE);
+        assertFalse(RecordingShortcuts.isWidgetIntent(context, missing));
+        assertFalse(RecordingShortcuts.isWidgetIntent(context,
+                new Intent(widget).putExtra(RecordingShortcuts.EXTRA_NONCE, UUID.randomUUID().toString())));
+        assertFalse(RecordingShortcuts.isWidgetIntent(context,
+                new Intent(widget).putExtra(RecordingShortcuts.EXTRA_NONCE, 7)));
+        assertFalse(RecordingShortcuts.isWidgetIntent(context,
+                new Intent(widget).setComponent(new ComponentName(context, MainActivity.class))));
+        assertFalse(RecordingShortcuts.isWidgetIntent(context, new Intent(widget).setAction(Intent.ACTION_MAIN)));
+        assertFalse(RecordingShortcuts.isWidgetIntent(context,
+                new Intent(widget).addFlags(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY)));
+        assertTrue(preferences.edit().remove(RecordingShortcuts.NONCE_KEY).commit());
+        assertFalse(RecordingShortcuts.isWidgetIntent(context, widget));
+        assertFalse("Validation never creates a missing capability", preferences.contains(RecordingShortcuts.NONCE_KEY));
     }
 
     private static ShortcutInfo find(List<ShortcutInfo> shortcuts, String id) {

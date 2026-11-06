@@ -30,7 +30,10 @@
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-enabled floating multimedia recorder controls" />
         </service>
         <receiver android:name=".RecordingWidget" android:exported="false" android:label="Floating mic" android:icon="@drawable/ic_shortcut_record">
-            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/recording_widget_info" />
         </receiver>
         <service android:name=".ProjectPublisher" android:exported="true" android:permission="android.permission.BIND_JOB_SERVICE" />

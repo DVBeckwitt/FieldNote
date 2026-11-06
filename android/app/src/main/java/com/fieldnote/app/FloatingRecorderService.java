@@ -62,6 +62,7 @@ public final class FloatingRecorderService extends Service {
     private static final String STOP = "com.fieldnote.app.STOP_FLOATING_RECORDER";
     private static final String CHANNEL = "fieldnote_floating_recorder";
     private static final int NOTIFICATION_ID = 1002;
+    private static final int SETUP_NOTIFICATION_ID = 1003;
     private static final int MIC_SIZE_DP = 96;
     private static final int GESTURE_SIZE_DP = 336;
     private static final long HOLD_DELAY_MS = 180;
@@ -91,6 +92,8 @@ public final class FloatingRecorderService extends Service {
     private boolean touching, touchClick, stopOnRelease, startedByTouch;
     private boolean destroyed, closing, receiverRegistered, previewAttached, textSaving;
     private boolean foregroundReady, cameraForeground, dark;
+    private boolean widgetAdmission, widgetCameraAdmission, widgetResolving;
+    private long widgetGeneration;
     private int centerX, centerY, gestureSizePx, pendingMarkers, ink, muted;
     private float touchX, touchY;
     private String observedError, observedMarkerError;
@@ -153,6 +156,10 @@ public final class FloatingRecorderService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (!foregroundReady || intent == null || closing || destroyed) { stopSelf(); return START_NOT_STICKY; }
         String action = intent.getAction();
+        if (RecordingShortcuts.isWidgetIntent(this, intent)) {
+            showFromWidget();
+            return START_NOT_STICKY;
+        }
         if ((HIDE.equals(action) || STOP.equals(action)) && instanceToken.equals(intent.getStringExtra("instance"))) {
             dismissOverlay(STOP.equals(action));
             return START_NOT_STICKY;
@@ -163,22 +170,101 @@ public final class FloatingRecorderService extends Service {
         }
         String value = intent.getStringExtra("project");
         if (value == null || !Settings.canDrawOverlays(this)) { dismissOverlay(false); return START_NOT_STICKY; }
-        Uri requested = Uri.parse(value);
+        ++widgetGeneration;
+        widgetResolving = false;
+        showProject(Uri.parse(value));
+        return START_NOT_STICKY;
+    }
+
+    /** Widget interaction grants the service start; no Activity is needed on this path. */
+    private void showFromWidget() {
+        if (!Settings.canDrawOverlays(this)) {
+            widgetSetupRequired("Enable Display over other apps for Fieldnote, then tap the widget again.");
+            return;
+        }
+        boolean hasCamera = getPackageManager().hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY);
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+                || (hasCamera && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)) {
+            widgetSetupRequired("Open Fieldnote to allow microphone and camera access, then tap the widget again.");
+            return;
+        }
+        if (!screenAvailable()) { dismissOverlay(false); return; }
+        if (widgetResolving || touching || cameraWorkPending() || textDialog != null
+                || pendingText != null || pendingVideo != null || textSaving) return;
+        try {
+            // Declare while-in-use types while the widget's user interaction still
+            // admits them, before any project/provider I/O. Retain them until Hide.
+            widgetAdmission = true;
+            widgetCameraAdmission = hasCamera;
+            setForeground(false, false);
+        } catch (RuntimeException failure) {
+            widgetSetupRequired("Android could not enable the floating microphone. Open Fieldnote to finish setup. " + message(failure));
+            return;
+        }
+        widgetResolving = true;
+        final long generation = ++widgetGeneration;
+        RecordingService.Snapshot capture = RecordingService.snapshot();
+        final Uri boundProject = RecordingService.isBusy() ? capture.projectUri : null;
+        io.execute(() -> {
+            try {
+                Uri destination = boundProject != null ? boundProject : store.lastCreatedProject();
+                if (destination == null) throw new java.io.IOException("Create a project in Fieldnote, then tap the widget again.");
+                if (store.readCachedProject(destination) == null) {
+                    if (!store.isArchive(destination)) throw new java.io.IOException("Open and convert the latest project in Fieldnote first.");
+                    store.readProject(destination);
+                }
+                main.post(() -> {
+                    if (destroyed || closing || generation != widgetGeneration) return;
+                    widgetResolving = false;
+                    if (!Settings.canDrawOverlays(this) || !screenAvailable()) { dismissOverlay(false); return; }
+                    showProject(destination);
+                });
+            } catch (Exception failure) {
+                main.post(() -> {
+                    if (destroyed || closing || generation != widgetGeneration) return;
+                    widgetResolving = false;
+                    widgetSetupRequired(message(failure));
+                });
+            }
+        });
+    }
+
+    /** Failure stays on the home screen; only an explicit notification tap opens setup. */
+    private void widgetSetupRequired(String explanation) {
+        toast(explanation);
+        NotificationManager notifications = getSystemService(NotificationManager.class);
+        if (notifications != null) {
+            PendingIntent setup = PendingIntent.getActivity(this, 2004, RecordingShortcuts.overlayIntent(this),
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            Notification notification = new Notification.Builder(this, CHANNEL)
+                    .setSmallIcon(R.drawable.ic_launcher).setContentTitle("Set up the home-screen microphone")
+                    .setContentText(explanation).setStyle(new Notification.BigTextStyle().bigText(explanation))
+                    .setContentIntent(setup).setAutoCancel(true).setVisibility(Notification.VISIBILITY_PRIVATE).build();
+            try { notifications.notify(SETUP_NOTIFICATION_ID, notification); }
+            catch (RuntimeException ignored) { /* The toast still explains setup if notifications are unavailable. */ }
+        }
+        dismissOverlay(false);
+    }
+
+    private void showProject(Uri requested) {
         RecordingService.Snapshot capture = RecordingService.snapshot();
         // The current original is authoritative; never redirect a live recording.
         if (RecordingService.isBusy() && capture.projectUri != null) requested = capture.projectUri;
         if (project != null && !project.equals(requested)
-                && (cameraWorkPending() || textDialog != null || pendingText != null || textSaving)) {
+                && (touching || cameraWorkPending() || textDialog != null || pendingText != null || pendingVideo != null || textSaving)) {
             toast("Finish the current floating capture before switching projects.");
-            return START_NOT_STICKY;
+            return;
         }
         project = requested;
         if (surface == null) {
             try { createOverlay(); }
             catch (RuntimeException failure) { toast("Could not show the floating microphone. " + message(failure)); dismissOverlay(false); }
         }
+        if (!closing) {
+            NotificationManager notifications = getSystemService(NotificationManager.class);
+            if (notifications != null) notifications.cancel(SETUP_NOTIFICATION_ID);
+        }
         updateState();
-        return START_NOT_STICKY;
     }
 
     private void createOverlay() {
@@ -539,7 +625,8 @@ public final class FloatingRecorderService extends Service {
             toast("Open Fieldnote and allow microphone access to record video."); return;
         }
         try {
-            // Camera/microphone types are acquired only for an actual capture, before hardware opens.
+            // Acquire capture types before hardware opens. Widget launches already
+            // retain them from the initial user interaction that admitted the service.
             setForeground(true, microphoneAudio);
             WindowManager.LayoutParams params = previewParams();
             if (!previewAttached) { windows.addView(preview, params); previewAttached = true; }
@@ -729,8 +816,8 @@ public final class FloatingRecorderService extends Service {
     private void setForeground(boolean cameraActive, boolean microphoneActive) {
         int type = 0;
         if (Build.VERSION.SDK_INT >= 34) type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
-        if (Build.VERSION.SDK_INT >= 30 && cameraActive) type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
-        if (Build.VERSION.SDK_INT >= 30 && microphoneActive) type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+        if (Build.VERSION.SDK_INT >= 30 && (cameraActive || widgetCameraAdmission)) type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
+        if (Build.VERSION.SDK_INT >= 30 && (microphoneActive || widgetAdmission)) type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
         Notification.Builder builder = new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(R.drawable.ic_launcher).setContentTitle("Fieldnote floating microphone")
                 .setContentText(cameraActive ? "Camera capture in progress" : "Hold the floating microphone to capture")
@@ -754,6 +841,8 @@ public final class FloatingRecorderService extends Service {
     private void dismissOverlay(boolean stopLocked) {
         if (destroyed || closing) return;
         closing = true;
+        ++widgetGeneration;
+        widgetResolving = false;
         showing = false;
         main.removeCallbacks(beginHeldRecording);
         main.removeCallbacks(contractGesture);
