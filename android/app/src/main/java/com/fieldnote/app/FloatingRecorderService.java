@@ -90,6 +90,7 @@ public final class FloatingRecorderService extends Service {
     private Uri project;
     private CaptureRef heldCapture, pendingText, pendingVideo, markerCapture;
     private boolean touching, touchClick, stopOnRelease, startedByTouch;
+    private int touchPointerId = -1;
     private boolean destroyed, closing, receiverRegistered, previewAttached, textSaving;
     private boolean foregroundReady, cameraForeground, dark;
     private boolean widgetAdmission, widgetCameraAdmission, widgetResolving;
@@ -410,6 +411,7 @@ public final class FloatingRecorderService extends Service {
                 if (RecordingService.isBusy() && !RecordingService.isRecording()) return true;
                 if (RecordingService.isRecording() && !sameProject(capture)) return true;
                 touching = true;
+                touchPointerId = event.getPointerId(event.getActionIndex());
                 stopOnRelease = RecordingService.isRecording();
                 startedByTouch = false;
                 heldCapture = stopOnRelease ? CaptureRef.of(capture) : null;
@@ -429,39 +431,53 @@ public final class FloatingRecorderService extends Service {
                 return true;
             case MotionEvent.ACTION_MOVE:
                 if (touching) {
-                    float rawX = event.getRawX(), rawY = event.getRawY();
+                    int pointer = event.findPointerIndex(touchPointerId);
+                    if (pointer < 0) { finishTouch(view, true); return true; }
                     Matrix transform = new Matrix(view.getMatrix());
-                    float[] delta = new float[2];
+                    float localX = event.getX(pointer), localY = event.getY(pointer);
+                    float[] delta = {localX - event.getX(), localY - event.getY()};
+                    transform.mapVectors(delta);
+                    // Indexed raw coordinates require API 29. Map the owner's
+                    // offset from pointer zero on every supported Android version.
+                    float rawX = event.getRawX() + delta[0], rawY = event.getRawY() + delta[1];
                     for (int h = 0; h < event.getHistorySize() && touching; h++) {
-                        delta[0] = event.getHistoricalX(h) - event.getX();
-                        delta[1] = event.getHistoricalY(h) - event.getY();
+                        delta[0] = event.getHistoricalX(pointer, h) - localX;
+                        delta[1] = event.getHistoricalY(pointer, h) - localY;
                         transform.mapVectors(delta);
                         recordMove(rawX + delta[0], rawY + delta[1]);
                     }
                     recordMove(rawX, rawY);
                 }
                 return true;
+            case MotionEvent.ACTION_POINTER_UP:
             case MotionEvent.ACTION_UP:
+                if (!touching || event.getPointerId(event.getActionIndex()) != touchPointerId) return true;
+                finishTouch(view, false);
+                return true;
             case MotionEvent.ACTION_CANCEL:
-                if (!touching) return true;
-                boolean cancelled = event.getActionMasked() == MotionEvent.ACTION_CANCEL;
-                main.removeCallbacks(beginHeldRecording);
-                touching = false;
-                microphone.home();
-                guide.finish();
-                if (gesture.getDirection() == RecordingGesture.Direction.RIGHT && (stopOnRelease || startedByTouch))
-                    stopGestureVideo();
-                boolean ordinaryRelease = gesture.onUp();
-                RecordingService.Snapshot beforeStop = RecordingService.snapshot();
-                if ((stopOnRelease || startedByTouch) && heldCapture != null && heldCapture.matches(beforeStop)
-                        && ((!cancelled && ordinaryRelease) || !beforeStop.locked)) stopCapture(heldCapture);
-                heldCapture = null;
-                main.postDelayed(contractGesture, 240);
-                if (!cancelled) { touchClick = true; view.performClick(); touchClick = false; }
-                updateState();
+                finishTouch(view, true);
                 return true;
             default: return true;
         }
+    }
+
+    private void finishTouch(View view, boolean cancelled) {
+        touchPointerId = -1;
+        if (!touching) return;
+        main.removeCallbacks(beginHeldRecording);
+        touching = false;
+        microphone.home();
+        guide.finish();
+        if (gesture.getDirection() == RecordingGesture.Direction.RIGHT && (stopOnRelease || startedByTouch))
+            stopGestureVideo();
+        boolean ordinaryRelease = gesture.onUp();
+        RecordingService.Snapshot beforeStop = RecordingService.snapshot();
+        if ((stopOnRelease || startedByTouch) && heldCapture != null && heldCapture.matches(beforeStop)
+                && ((!cancelled && ordinaryRelease) || !beforeStop.locked)) stopCapture(heldCapture);
+        heldCapture = null;
+        main.postDelayed(contractGesture, 240);
+        if (!cancelled) { touchClick = true; view.performClick(); touchClick = false; }
+        updateState();
     }
 
     private void recordMove(float rawX, float rawY) {
@@ -844,6 +860,9 @@ public final class FloatingRecorderService extends Service {
         ++widgetGeneration;
         widgetResolving = false;
         showing = false;
+        touching = false;
+        touchPointerId = -1;
+        heldCapture = null;
         main.removeCallbacks(beginHeldRecording);
         main.removeCallbacks(contractGesture);
         main.removeCallbacks(visibilityCheck);
@@ -942,6 +961,7 @@ public final class FloatingRecorderService extends Service {
         main.removeCallbacks(contractGesture);
         if (touching && heldCapture != null && !RecordingService.snapshot().locked) stopCapture(heldCapture);
         touching = false;
+        touchPointerId = -1;
         heldCapture = null;
         microphone.home();
         guide.finish();

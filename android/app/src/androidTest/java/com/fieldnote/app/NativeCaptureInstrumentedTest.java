@@ -628,6 +628,91 @@ public final class NativeCaptureInstrumentedTest {
         assertEncodedAudio(store.mediaUri(projectUri, audio.getString("path")));
     }
 
+    @Test public void originalMicFingerReleaseEndsRecordingWhileSecondFingerRemains() throws Exception {
+        notebook = ActivityScenario.launch(MainActivity.class);
+        awaitNotebookReady();
+        onNotebook(activity -> {
+            beginRootRecordTouch(activity);
+            recordTouch.sendPointers(MotionEvent.ACTION_DOWN, new int[]{7}, new float[]{0}, new float[]{0});
+        });
+        await("original microphone finger starts narration", 15_000,
+                () -> recordingState(RecordingService.State.RECORDING) && RecordingService.snapshot().elapsedMs() >= 900);
+        RecordingService.Snapshot started = RecordingService.snapshot();
+        ownedEntryId = started.entryId;
+        onNotebook(activity -> {
+            // Both pointers belong to the same mic View, unlike a split header-button tap.
+            recordTouch.sendPointers(MotionEvent.ACTION_POINTER_DOWN | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT),
+                    new int[]{7, 9}, new float[]{0, 24}, new float[]{0, 0});
+            assertHeldNarration(started);
+            // Pointer indices are not identity: keep the owner at home while the
+            // other finger becomes index zero and crosses both camera regions.
+            for (float secondaryX : new float[]{-160, 160}) {
+                recordTouch.sendPointers(MotionEvent.ACTION_MOVE,
+                        new int[]{9, 7}, new float[]{secondaryX, 0}, new float[]{0, 0});
+                assertEquals("Only the original finger can select a media gesture", RecordingGesture.Direction.NONE,
+                        ((RecordingGesture) readField(activity, "gesture")).getDirection());
+                assertHeldNarration(started);
+            }
+            recordTouch.sendPointers(MotionEvent.ACTION_POINTER_UP,
+                    new int[]{9, 7}, new float[]{160, 0}, new float[]{0, 0});
+            assertTrue("Lifting the non-owner finger leaves the original hold active",
+                    (Boolean) readField(activity, "touching"));
+            assertHeldNarration(started);
+            recordTouch.sendPointers(MotionEvent.ACTION_POINTER_DOWN | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT),
+                    new int[]{7, 9}, new float[]{0, 24}, new float[]{0, 0});
+            recordTouch.sendPointers(MotionEvent.ACTION_POINTER_UP,
+                    new int[]{7, 9}, new float[]{0, 24}, new float[]{0, 0});
+            assertFalse("Lifting the original microphone finger ends its hold even while another finger stays down",
+                    (Boolean) readField(activity, "touching"));
+            recordTouch.sendPointers(MotionEvent.ACTION_MOVE, new int[]{9}, new float[]{-160}, new float[]{0});
+            recordTouch.sendPointers(MotionEvent.ACTION_UP, new int[]{9}, new float[]{-160}, new float[]{0});
+        });
+        await("original release publishes narration without a second-finger camera action", 20_000,
+                () -> recordingState(RecordingService.State.IDLE)
+                        && mediaOfKind(store.readProject(projectUri), "audio").length() == 1);
+        JSONObject index = store.readProject(projectUri);
+        assertEquals(0, mediaOfKind(index, "photo").length());
+        assertEquals(0, mediaOfKind(index, "video").length());
+        JSONObject audio = findMedia(index, "audio");
+        assertEquals(started.startedAt, Instant.parse(audio.getString("startedAt")).toEpochMilli());
+        assertEncodedAudio(store.mediaUri(projectUri, audio.getString("path")));
+    }
+
+    @Test public void settingsButtonTapDuringHeldNarrationCannotStealItsRelease() throws Exception {
+        notebook = ActivityScenario.launch(MainActivity.class);
+        awaitNotebookReady();
+        onNotebook(activity -> {
+            beginRootRecordTouch(activity);
+            recordTouch.send(MotionEvent.ACTION_DOWN, 0, 0);
+        });
+        await("held narration starts before a second-finger Settings tap", 15_000,
+                () -> recordingState(RecordingService.State.RECORDING) && RecordingService.snapshot().elapsedMs() >= 900);
+        RecordingService.Snapshot started = RecordingService.snapshot();
+        ownedEntryId = started.entryId;
+        onNotebook(activity -> recordTouch.tapSecondPointer(activity.findViewById(R.id.settings_button)));
+        onNotebook(activity -> {
+            assertNull("Settings cannot take window focus from a microphone hold", readField(activity, "settingsDialog"));
+            assertHeldNarration(started);
+            recordTouch.send(MotionEvent.ACTION_UP, 0, 0);
+        });
+        await("the held finger still ends its original audio file", 20_000,
+                () -> recordingState(RecordingService.State.IDLE)
+                        && mediaOfKind(store.readProject(projectUri), "audio").length() == 1);
+        JSONObject audio = findMedia(store.readProject(projectUri), "audio");
+        assertEquals(started.startedAt, Instant.parse(audio.getString("startedAt")).toEpochMilli());
+        assertEncodedAudio(store.mediaUri(projectUri, audio.getString("path")));
+    }
+
+    private void beginRootRecordTouch(MainActivity activity) {
+        View root = (View) readField(activity, "root");
+        View mic = activity.findViewById(R.id.record_button);
+        int[] origin = new int[2], button = new int[2];
+        root.getLocationOnScreen(origin);
+        mic.getLocationOnScreen(button);
+        recordTouch = new TouchPath(root, button[0] - origin[0] + mic.getWidth() / 2f,
+                button[1] - origin[1] + mic.getHeight() / 2f);
+    }
+
     @Test public void recordingControlsFitWithMultiLineRecentNote() throws Exception {
         store.saveText(projectUri, UUID.randomUUID().toString(),
                 "Apparatus observation\nA longer saved observation that occupies both preview lines in the latest-note card.",
@@ -3095,6 +3180,29 @@ public final class NativeCaptureInstrumentedTest {
             finally { event.recycle(); }
         }
 
+        void sendPointers(int action, int[] ids, float[] xDp, float[] yDp) {
+            int[] position = new int[2];
+            target.getLocationOnScreen(position);
+            MotionEvent.PointerProperties[] properties = new MotionEvent.PointerProperties[ids.length];
+            MotionEvent.PointerCoords[] coordinates = new MotionEvent.PointerCoords[ids.length];
+            for (int i = 0; i < ids.length; i++) {
+                properties[i] = new MotionEvent.PointerProperties();
+                properties[i].id = ids[i];
+                properties[i].toolType = MotionEvent.TOOL_TYPE_FINGER;
+                coordinates[i] = new MotionEvent.PointerCoords();
+                coordinates[i].x = originX + xDp[i] * density;
+                coordinates[i].y = originY + yDp[i] * density;
+                coordinates[i].pressure = 1f;
+                coordinates[i].size = 1f;
+            }
+            MotionEvent event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action,
+                    ids.length, properties, coordinates, 0, 0, 1f, 1f, 0, 0,
+                    android.view.InputDevice.SOURCE_TOUCHSCREEN, 0);
+            event.offsetLocation(-position[0], -position[1]);
+            try { assertTrue("The native touch hierarchy routes the pointer stream", target.dispatchTouchEvent(event)); }
+            finally { event.recycle(); }
+        }
+
         void tapSecondPointer(View control) {
             int[] parent = new int[2], button = new int[2];
             target.getLocationOnScreen(parent);
@@ -3319,7 +3427,7 @@ public final class NativeCaptureInstrumentedTest {
     }
 
     private void saveScreenshot(String name) throws IOException {
-        name = "beta20-final-" + name;
+        name = "beta21-final-" + name;
         awaitScreenshotMainTurn();
         // Held feedback intentionally keeps drawing. A fully idle UI is neither required
         // nor a bounded condition here. Behavior is established by each test's assertions;

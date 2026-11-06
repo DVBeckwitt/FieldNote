@@ -1,68 +1,73 @@
-# Beta 20 validation
+# Beta 21 validation
 
-Version **0.2.0-beta.20**, code **21**, was validated locally on 2026-11-06.
-The [GitHub release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.20)
-provides the APK. Package: `com.fieldnote.app`; artifact size: **217,000 bytes**.
+Version **0.2.0-beta.21**, code **22**, was validated locally on 2026-11-06.
+The [GitHub release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.21)
+provides the APK. Package: `com.fieldnote.app`; artifact size: **217,312 bytes**.
 
-SHA-256: `5c18da2d207f304158eb6097c5b1f64b9d43b45aba3cb2ed28b5cb18cb8b7345`.
+SHA-256: `4fe6b12634298c70f2d200cf0f6efc937bb7245535a7b5d8a4d51562549dd4d8`.
 
-## Project files beside Settings
+## Confirmed bugs and corrections
 
-The Files tab and horizontal tab navigation were removed. A folder button beside
-Settings offers to open the granted storage folder, open the project ZIP in a
-compatible external app, or share the ZIP. The Record surface and finger-following
-notes sheet remain, including search, tags, markers, and microphone gestures.
+Both recording controls previously treated the last finger leaving the microphone
+as the end of a hold. If a second finger remained after the original one lifted,
+audio could continue and the remaining finger could take over capture gestures.
+MainActivity and FloatingRecorderService now retain the original pointer ID,
+follow its current and batched coordinates, ignore secondary releases, and end
+the hold when its owner lifts. Cancellation/lifecycle paths clear that ownership.
+Explicit upward locks still keep their recording running. Coordinate conversion
+retains API 26 compatibility and follows Android's
+[pointer ID contract](https://developer.android.com/develop/ui/views/touch-and-input/gestures/multi).
 
-Folder viewing uses Android's `ACTION_VIEW` directory intent. External browsing
-receives temporary read-only access scoped to the user-granted storage tree;
-ZIP viewing receives temporary read access to the exact selected document.
-An imported standalone ZIP has no inferred parent folder. Opening/sharing the ZIP
-is blocked while capture or queued publication is active. Viewer absence and
-revoked access have explicit error messages.
+A second-finger tap on Settings could also open a focus-stealing dialog during a
+held recording. Settings now uses the same held-touch guard as the Files button.
 
-Five new intent tests cover opaque document IDs, grant scope, imported ZIPs,
-tree-only locations, and invalid input. A new native integration test verifies
-header placement, menu actions, and external intent dispatch without replacing
-Record. Existing navigation tests now check that horizontal swipes stay on Record;
-second-finger header taps cannot interrupt a held recording. Notes filtering,
-activity recreation, and shake gating still have native coverage.
+Four new native regression cases failed before the fixes and passed afterward.
+They cover owner/secondary release, reordered pointer arrays, prevention of
+secondary camera gestures, Settings focus, floating lock preservation, and saved
+encoded audio. Main-screen cases dispatch multi-pointer events through the actual
+view hierarchy; floating cases inject input through Android's input dispatcher.
+Independent review found no further actionable navigation, capture, or storage
+issue within this bounded pass. No broad refactor or dependency update was made.
 
-## Standalone runtime acceptance
-
-Outside instrumentation, a new test project was created through Android's actual
-folder picker. **Open storage folder** launched Android Files at that granted
-folder with the project ZIP visible; it did not open a folder-selection dialog.
-Returning through Files restored Fieldnote. This emulator has no app registered
-for direct ZIP viewing, so **Open project ZIP** was verified to show its useful
-no-viewer message. Direct ZIP dispatch and grants were verified by native tests,
-not by a third-party ZIP viewer. Actual dark and light screenshots were inspected;
-the README now shows the tab-free native UI.
-
-## Build and tests
+## Final build and tests
 
 Environment: Windows, JDK 21, Gradle 8.14.6, Android Gradle Plugin 8.6.0,
-and SDK 35. The complete release/JVM/lint/native gate passed in **5m 2s**.
+and SDK 35. The final complete release/JVM/lint/native gate passed in **6m 19s**.
 See [build instructions](../android/BUILDING.md) for the commands.
 
 | Check | Result |
 | --- | --- |
 | Release assembly | Passed |
 | JVM tests | 62 passed |
-| Native API 36 emulator tests | 121 passed |
-| Android total | **183 passed; 0 failures, errors, or skips** |
+| Native API 36 emulator tests | 125 passed |
+| Final Android total | **187 passed; 0 failures, errors, or skips** |
 | Release lint | **0 errors, 63 warnings** |
-| Signed release update from beta 19 | Passed; microphone grant preserved |
+| Signed release update from beta 20 | Passed; microphone grant preserved |
 | Signed release launch | Passed; folder button visible, tabs absent |
 
-Existing capture, playback, marker, overlay, widget, shortcut, note-save retry,
-storage, ZIP publication, and security checks passed. Tested source hashes were
-unchanged at packaging. No assertions or lint warnings were suppressed. The
-retained browser prototype was unchanged and was not retested.
+Capture, playback, markers, overlay/widget, shortcuts, note-save retry, search,
+tags, note-sheet gestures, storage, ZIP publication, and existing security checks
+passed in the final run. Tested source hashes matched at packaging. Assertions,
+timeouts, and lint checks were not relaxed. The unchanged browser prototype was
+not retested.
 
-## APK and limits
+## Intermittent test result
+
+The initial full run had **one failure out of 125 native tests**:
+`FloatingRecorderInstrumentedTest.upwardLockAndDiagonalMarkerSurviveReleaseUntilCenterTapStops`
+timed out waiting for a marker after locking audio. The cause remains unconfirmed.
+The isolated test passed, all nine floating tests passed together, and the original
+preceding-widget plus floating sequence passed all 12 tests. The final full run
+also passed. These were three bounded diagnostic follow-ups, not automatic retries
+added to the suite. Failure-only pointer/window/marker diagnostics were retained;
+no production timing change or relaxed assertion was used to conceal the result.
+A possible overlay-resize readiness gap was identified during review but was not
+established as the cause or reported as fixed.
+
+## APK and coverage limits
 
 APK Signature Scheme v2 verification passed with the existing beta certificate.
-Packaged checks confirmed version code 21, minimum API 26, target API 35, a
+Packaged checks confirmed version code 22, minimum API 26, target API 35, a
 non-debuggable release, no INTERNET permission, and absence of test-only components.
 Public APK bytes and checksum are verified against the tested local artifact.
 

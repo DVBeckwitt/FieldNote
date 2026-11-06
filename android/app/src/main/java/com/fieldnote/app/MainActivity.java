@@ -117,6 +117,7 @@ public class MainActivity extends Activity {
     private GestureGuideView gestureGuide;
     private RecordingGesture gesture;
     private boolean touching, stopOnRelease, touchClick, startedByTouch, permissionRequest;
+    private int touchPointerId = -1;
     private float touchStartX, touchStartY;
     private String pendingMicAction;
     private Uri pendingMicProject;
@@ -765,6 +766,7 @@ public class MainActivity extends Activity {
                 stopOnRelease = RecordingService.isRecording();
                 if (!stopOnRelease && !captureReady()) return true;
                 touching = true;
+                touchPointerId = event.getPointerId(event.getActionIndex());
                 startedByTouch = false;
                 // Anchor every hold to the mic's layout center, independent of the
                 // actual down point and the circle's press-scale animation.
@@ -785,17 +787,24 @@ public class MainActivity extends Activity {
                 return true;
             case MotionEvent.ACTION_MOVE:
                 if (touching) {
+                    int pointer = event.findPointerIndex(touchPointerId);
+                    if (pointer < 0) { cancelRecordTouch(view); return true; }
+                    Matrix transform = new Matrix(view.getMatrix());
+                    float localX = event.getX(pointer), localY = event.getY(pointer);
+                    float[] delta = {localX - event.getX(), localY - event.getY()};
+                    transform.mapVectors(delta);
+                    // Raw indexed coordinates require API 29. Recover the owner's
+                    // screen position from pointer zero on all supported versions.
                     float rawX = event.getRawX(), rawY = event.getRawY();
+                    rawX += delta[0];
+                    rawY += delta[1];
                     if (event.getHistorySize() > 0) {
                         // Android batches motion: a return through home may exist only in history.
                         // Capture the mic's press scale. Its parents
                         // are untransformed, so mapped local deltas recover screen-space samples.
-                        Matrix transform = new Matrix(view.getMatrix());
-                        float localX = event.getX(), localY = event.getY();
-                        float[] delta = new float[2];
                         for (int h = 0; h < event.getHistorySize() && touching; h++) {
-                            delta[0] = event.getHistoricalX(h) - localX;
-                            delta[1] = event.getHistoricalY(h) - localY;
+                            delta[0] = event.getHistoricalX(pointer, h) - localX;
+                            delta[1] = event.getHistoricalY(pointer, h) - localY;
                             transform.mapVectors(delta);
                             recordMove(view, rawX + delta[0], rawY + delta[1]);
                         }
@@ -803,10 +812,12 @@ public class MainActivity extends Activity {
                     recordMove(view, rawX, rawY);
                 }
                 return true;
+            case MotionEvent.ACTION_POINTER_UP:
             case MotionEvent.ACTION_UP:
-                if (!touching) return true;
+                if (!touching || event.getPointerId(event.getActionIndex()) != touchPointerId) return true;
                 main.removeCallbacks(beginHeldRecording);
                 touching = false;
+                touchPointerId = -1;
                 recordButton.home();
                 gestureGuide.finish();
                 if (gesture.getDirection() == RecordingGesture.Direction.RIGHT && (stopOnRelease || startedByTouch))
@@ -821,18 +832,23 @@ public class MainActivity extends Activity {
                 touchClick = false;
                 return true;
             case MotionEvent.ACTION_CANCEL:
-                main.removeCallbacks(beginHeldRecording);
-                recordButton.home();
-                gestureGuide.finish();
-                if (touching && gesture.getDirection() == RecordingGesture.Direction.RIGHT && (startedByTouch || stopOnRelease))
-                    stopGestureVideo();
-                if (touching && (startedByTouch || stopOnRelease) && !RecordingService.snapshot().locked)
-                    stopRecordingAndVideo();
-                touching = false;
-                view.getParent().requestDisallowInterceptTouchEvent(false);
+                cancelRecordTouch(view);
                 return true;
             default: return true;
         }
+    }
+
+    private void cancelRecordTouch(View view) {
+        main.removeCallbacks(beginHeldRecording);
+        recordButton.home();
+        gestureGuide.finish();
+        if (touching && gesture.getDirection() == RecordingGesture.Direction.RIGHT && (startedByTouch || stopOnRelease))
+            stopGestureVideo();
+        if (touching && (startedByTouch || stopOnRelease) && !RecordingService.snapshot().locked)
+            stopRecordingAndVideo();
+        touching = false;
+        touchPointerId = -1;
+        view.getParent().requestDisallowInterceptTouchEvent(false);
     }
 
     private void recordMove(View view, float rawX, float rawY) {
@@ -1170,6 +1186,7 @@ public class MainActivity extends Activity {
             stopRecordingAndVideo();
             main.removeCallbacks(beginHeldRecording);
             touching = false;
+            touchPointerId = -1;
             gesture.reset();
             gestureGuide.finish();
             recordButton.home();
@@ -1227,6 +1244,7 @@ public class MainActivity extends Activity {
         if (touching && (startedByTouch || stopOnRelease) && !RecordingService.snapshot().locked)
             stopRecordingAndVideo();
         touching = false;
+        touchPointerId = -1;
         main.removeCallbacks(beginHeldRecording);
         recordButton.home();
         gestureGuide.finish();
@@ -1952,6 +1970,7 @@ public class MainActivity extends Activity {
     }
 
     private void settings() {
+        if (touching) return; // A second finger must not take focus from the held microphone.
         if (settingsDialog != null && settingsDialog.isShowing()) return;
         LinearLayout content = dialogColumn();
         Switch darkSwitch = new Switch(this);
@@ -2079,6 +2098,7 @@ public class MainActivity extends Activity {
             if ((startedByTouch || stopOnRelease) && !RecordingService.snapshot().locked) stopRecordingAndVideo();
             main.removeCallbacks(beginHeldRecording);
             touching = false;
+            touchPointerId = -1;
             recordButton.home();
             gestureGuide.finish();
         }
@@ -2101,6 +2121,7 @@ public class MainActivity extends Activity {
         if (receiverRegistered) { unregisterReceiver(recordingReceiver); receiverRegistered = false; }
         if (touching && !gesture.isLocked() && !RecordingService.snapshot().locked) stopRecordingAndVideo();
         touching = false;
+        touchPointerId = -1;
         recordButton.home();
         gestureGuide.finish();
         if (inlineCamera != null) inlineCamera.releaseHardware();

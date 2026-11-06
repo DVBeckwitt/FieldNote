@@ -1,23 +1,24 @@
-# Fieldnote 0.2.0-beta.20
+# Fieldnote 0.2.0-beta.21
 
-Android beta (version code 21) for Android 8.0 and later.
+Android beta (version code 22) for Android 8.0 and later.
 No Google services are needed; no network permission is requested.
 Root access is neither needed nor used.
 
 ## Install
 
-Download the APK from the [beta 20 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.20).
+Download the APK from the [beta 21 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.21).
 Transfer it to the phone and open it from Files. If prompted, allow that
 installer source to install apps, then complete installation. This personal beta
 uses the local signing certificate; updates over earlier betas must use the same
 certificate. Keep the existing app installed to preserve its permissions,
 settings, and any pending captures.
 
-Beta 20 replaces the Files tab with a folder button beside Settings. It offers
-to open the project's storage folder in your file explorer, open its ZIP, or
-share the ZIP. Record is now the single main screen, with the notes list still
-available by swiping up from the recent note. Home-screen widget capture, shake
-start/stop, and background ZIP saving remain available.
+Beta 21 fixes multi-touch recording on both the main microphone and floating
+control. The finger that starts a hold owns that hold: lifting it ends the hold,
+while an extra finger cannot take over its gestures. An explicit upward lock still
+keeps audio recording. Tapping Settings with another finger cannot interrupt a
+held recording. The folder button beside Settings, notes list, home-screen widget,
+shake start/stop, and background ZIP saving remain available.
 The [validation summary](../docs/VALIDATION.md) records the checks and their limits.
 See [Building Fieldnote](BUILDING.md) to build or test from source.
 

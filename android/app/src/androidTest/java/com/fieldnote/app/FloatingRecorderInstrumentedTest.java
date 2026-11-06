@@ -193,6 +193,52 @@ public final class FloatingRecorderInstrumentedTest {
         assertMainBackground();
     }
 
+    @Test public void originalFloatingPointerReleaseStopsHeldAudioWhileSecondFingerRemains() throws Exception {
+        launchOverlay();
+        RecordingService.Snapshot started = holdAudio();
+        touch.addSecond();
+        touch.liftOwner();
+        assertFalse("Lifting the original finger ends the floating hold immediately",
+                onMainValue(() -> (boolean) field(requireService(), "touching")));
+        await("owner release finalizes audio without waiting for the other finger", 15_000,
+                () -> !RecordingService.isBusy());
+        touch.move(-128, 0);
+        assertFalse("The remaining finger cannot take over camera gestures", overlayCameraBusy());
+        assertFalse("The remaining finger cannot start another recording", RecordingService.isBusy());
+        touch.up(-128, 0);
+        JSONObject index = awaitPublished(1, 0, 0);
+        assertSingleEntry(index, started.entryId, 1);
+        assertRealOriginals(index);
+    }
+
+    @Test public void secondaryFloatingPointerReleaseKeepsOwnerAndExplicitLockSurvivesOwnerRelease() throws Exception {
+        launchOverlay();
+        RecordingService.Snapshot started = holdAudio();
+        touch.addSecond();
+        touch.liftSecond();
+        assertTrue("Lifting only the additional finger keeps the original hold",
+                onMainValue(() -> (boolean) field(requireService(), "touching")));
+        assertHeldIdentity(started, false);
+        touch.move(0, -128);
+        await("the original pointer can still explicitly lock", 5_000,
+                () -> RecordingService.snapshot().locked);
+        touch.addSecond();
+        touch.liftOwner();
+        assertFalse("An explicit lock does not transfer gesture ownership to another finger",
+                onMainValue(() -> (boolean) field(requireService(), "touching")));
+        assertHeldIdentity(started, true);
+        touch.move(0, 0);
+        touch.up(0, 0);
+        assertHeldIdentity(started, true);
+        awaitMicHome();
+        touch = new TouchPath();
+        touch.press();
+        touch.up(0, 0);
+        JSONObject index = awaitPublished(1, 0, 0);
+        assertSingleEntry(index, started.entryId, 1);
+        assertRealOriginals(index);
+    }
+
     @Test public void centerPhotoCenterPhotoKeepsOneAudioAndTwoOriginalPhotos() throws Exception {
         launchOverlay();
         RecordingService.Snapshot started = holdAudioAt(32);
@@ -533,6 +579,8 @@ public final class FloatingRecorderInstrumentedTest {
         final float x, y, density;
         final long began;
         boolean down;
+        boolean secondDown;
+        int soloId;
         float lastX, lastY;
         TouchPath() throws Exception {
             float[] position = onMainValue(() -> {
@@ -550,7 +598,48 @@ public final class FloatingRecorderInstrumentedTest {
         void pressAt(float dx, float dy) { down = true; send(MotionEvent.ACTION_DOWN, dx, dy); }
         void move(float dx, float dy) { send(MotionEvent.ACTION_MOVE, dx, dy); }
         void up(float dx, float dy) { send(MotionEvent.ACTION_UP, dx, dy); down = false; }
-        void cancel() { if (down) { send(MotionEvent.ACTION_CANCEL, lastX, lastY); down = false; } }
+        void cancel() {
+            if (!down) return;
+            if (secondDown) sendPair(MotionEvent.ACTION_CANCEL);
+            else send(MotionEvent.ACTION_CANCEL, lastX, lastY);
+            down = secondDown = false;
+        }
+        void addSecond() {
+            assertTrue(down && !secondDown && soloId == 0);
+            sendPair(MotionEvent.ACTION_POINTER_DOWN | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT));
+            secondDown = true;
+        }
+        void liftOwner() {
+            assertTrue(secondDown);
+            sendPair(MotionEvent.ACTION_POINTER_UP);
+            secondDown = false;
+            soloId = 1;
+            lastX += 12;
+        }
+        void liftSecond() {
+            assertTrue(secondDown);
+            sendPair(MotionEvent.ACTION_POINTER_UP | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT));
+            secondDown = false;
+        }
+        private void sendPair(int action) {
+            MotionEvent.PointerProperties[] pointers = new MotionEvent.PointerProperties[2];
+            MotionEvent.PointerCoords[] points = new MotionEvent.PointerCoords[2];
+            for (int i = 0; i < 2; i++) {
+                pointers[i] = new MotionEvent.PointerProperties();
+                pointers[i].id = i;
+                pointers[i].toolType = MotionEvent.TOOL_TYPE_FINGER;
+                points[i] = new MotionEvent.PointerCoords();
+                points[i].x = x + (lastX + 12 * i) * density;
+                points[i].y = y + lastY * density;
+                points[i].pressure = 1;
+                points[i].size = 1;
+            }
+            MotionEvent event = MotionEvent.obtain(began, SystemClock.uptimeMillis(), action, 2,
+                    pointers, points, 0, 0, 1, 1, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0);
+            try { assertTrue("Android accepts both fingers on the floating microphone",
+                    instrumentation.getUiAutomation().injectInputEvent(event, true)); }
+            finally { event.recycle(); }
+        }
         void quickRightSwipe() {
             down = true;
             // Queue the complete input path before the host's 180ms hold timer;
@@ -566,7 +655,7 @@ public final class FloatingRecorderInstrumentedTest {
         private void send(int action, float dx, float dy, boolean sync) {
             lastX = dx; lastY = dy;
             MotionEvent.PointerProperties pointer = new MotionEvent.PointerProperties();
-            pointer.id = 0; pointer.toolType = MotionEvent.TOOL_TYPE_FINGER;
+            pointer.id = soloId; pointer.toolType = MotionEvent.TOOL_TYPE_FINGER;
             MotionEvent.PointerCoords point = new MotionEvent.PointerCoords();
             point.x = x + dx * density; point.y = y + dy * density; point.pressure = 1; point.size = 1;
             MotionEvent event = MotionEvent.obtain(began, SystemClock.uptimeMillis(), action, 1,
@@ -651,7 +740,40 @@ public final class FloatingRecorderInstrumentedTest {
             SystemClock.sleep(50);
         } while (SystemClock.elapsedRealtime() < deadline);
         fail("Timed out: " + description + "; audio=" + RecordingService.snapshot().state
-                + ", audioError=" + RecordingService.snapshot().error + ", overlay=" + FloatingRecorderService.isShowing());
+                + ", audioError=" + RecordingService.snapshot().error + ", overlay=" + FloatingRecorderService.isShowing()
+                + "; " + floatingInputState());
+    }
+    private String floatingInputState() throws Exception {
+        return onMainValue(() -> {
+            RecordingService.Snapshot capture = RecordingService.snapshot();
+            String state = "markers=" + capture.markerCount + ", markerError=" + capture.markerError;
+            FloatingRecorderService service = activeService();
+            if (service == null) return state + ", service=absent";
+            RecordingGesture gesture = (RecordingGesture) field(service, "gesture");
+            View mic = (View) field(service, "microphone");
+            View surface = (View) field(service, "surface");
+            android.view.WindowManager.LayoutParams window =
+                    (android.view.WindowManager.LayoutParams) field(service, "micWindow");
+            state += ", touching=" + field(service, "touching") + ", pointer=" + field(service, "touchPointerId")
+                    + ", direction=" + (gesture == null ? "absent" : gesture.getDirection())
+                    + ", armed=" + (gesture != null && gesture.isArmed())
+                    + ", centered=" + (gesture != null && gesture.isCentered())
+                    + ", anchor=" + field(service, "touchX") + "/" + field(service, "touchY");
+            if (touch != null) state += ", injected=" + (touch.x + touch.lastX * touch.density)
+                    + "/" + (touch.y + touch.lastY * touch.density) + ", soloId=" + touch.soloId;
+            if (surface != null) {
+                int[] location = new int[2];
+                surface.getLocationOnScreen(location);
+                state += ", surface=" + location[0] + "/" + location[1] + "/"
+                        + surface.getWidth() + "/" + surface.getHeight();
+            }
+            if (mic != null) state += ", mic=" + mic.getLeft() + "/" + mic.getTop() + "/"
+                    + mic.getWidth() + "/" + mic.getHeight() + ", translation="
+                    + mic.getTranslationX() + "/" + mic.getTranslationY() + ", scale="
+                    + mic.getScaleX() + "/" + mic.getScaleY();
+            if (window != null) state += ", window=" + window.x + "/" + window.y + "/" + window.width + "/" + window.height;
+            return state;
+        });
     }
     private String ownPackage() {
         String name = context.getPackageName();
