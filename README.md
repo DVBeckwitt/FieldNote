@@ -2,7 +2,11 @@
 
 # Fieldnote
 
-A minimalist Android lab notebook for audio, photos, video, and text, organized by project.
+This app was inspired as I was taking notes for lab work and wanted a more streamlined note taking method. No open-source projects existed so I made this. 
+It stays completely offline so there is no data concerns. 
+For transparency, I used Codex Astra to *assist* (not write code or UI blindly) in the creation of this app as Python is my native language.  
+
+Android lab notebook for audio, photos, video, and text, organized by project.
 
 - **Capture with one hand.** Hold the microphone to record; swipe to take photos, record video, add text, or mark a moment. The camera preview stays with the recording control.
 - **Capture from your home screen.** Record now starts audio in your latest-created project. Tap the mic widget to show the floating hold-and-swipe control over your launcher, without opening Fieldnote after setup.
