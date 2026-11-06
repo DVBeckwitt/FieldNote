@@ -241,7 +241,7 @@ public final class RecordingShortcutsInstrumentedTest {
         assertNull("A mic-only widget has no configuration Activity", found.configure);
     }
 
-    @Test public void widgetContainsOnlyTheMicAndClickUsesAnImmutableForegroundServiceIntent() {
+    @Test public void widgetContainsOnlyTheMicAndStartUsesAnImmutableForegroundServiceIntent() {
         AtomicInteger clicks = new AtomicInteger();
         AtomicReference<IntentSender> sent = new AtomicReference<>();
         Context intercepted = new ContextWrapper(context) {
@@ -264,7 +264,7 @@ public final class RecordingShortcutsInstrumentedTest {
             assertTrue(microphone.performClick());
         });
         assertEquals("The native RemoteViews click is intercepted without launching Main", 1, clicks.get());
-        PendingIntent expected = PendingIntent.getForegroundService(context, 61, RecordingShortcuts.widgetIntent(context),
+        PendingIntent expected = PendingIntent.getForegroundService(context, 62, RecordingShortcuts.recordingWidgetIntent(context),
                 PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE);
         assertNotNull(expected);
         assertEquals(context.getPackageName(), expected.getCreatorPackage());
@@ -315,6 +315,80 @@ public final class RecordingShortcutsInstrumentedTest {
         assertTrue(preferences.edit().remove(RecordingShortcuts.NONCE_KEY).commit());
         assertFalse(RecordingShortcuts.isWidgetIntent(context, widget));
         assertFalse("Validation never creates a missing capability", preferences.contains(RecordingShortcuts.NONCE_KEY));
+    }
+
+    @Test public void recordingWidgetCapabilityIsExplicitPersistentAndContainsNoCallerProject() {
+        Intent widget = RecordingShortcuts.recordingWidgetIntent(context);
+        assertTrue(RecordingShortcuts.isRecordingWidgetIntent(context, widget));
+        assertFalse(RecordingShortcuts.isWidgetIntent(context, widget));
+        assertFalse(RecordingShortcuts.isRecordIntent(context, widget));
+        assertFalse(RecordingShortcuts.isOverlayIntent(context, widget));
+        assertEquals(new ComponentName(context, RecordingService.class), widget.getComponent());
+        assertEquals(0, widget.getFlags());
+        assertNull(widget.getData());
+        assertNull(widget.getClipData());
+        assertEquals(Collections.singleton(RecordingShortcuts.EXTRA_NONCE), widget.getExtras().keySet());
+        String persisted = preferences.getString(RecordingShortcuts.NONCE_KEY, null);
+        assertTrue("The widget uses its durable private capability",
+                persisted != null && persisted.equals(widget.getStringExtra(RecordingShortcuts.EXTRA_NONCE)));
+        Intent reconstructed = new Intent(context, RecordingService.class).setAction(widget.getAction())
+                .putExtra(RecordingShortcuts.EXTRA_NONCE, persisted);
+        assertTrue(RecordingShortcuts.isRecordingWidgetIntent(context, reconstructed));
+    }
+
+    @Test public void recordingWidgetRejectsForgedCapabilitiesAndCannotCreateOneByValidation() {
+        Intent widget = RecordingShortcuts.recordingWidgetIntent(context);
+        assertFalse(RecordingShortcuts.isRecordingWidgetIntent(context, null));
+        Intent missing = new Intent(widget);
+        missing.removeExtra(RecordingShortcuts.EXTRA_NONCE);
+        assertFalse(RecordingShortcuts.isRecordingWidgetIntent(context, missing));
+        assertFalse(RecordingShortcuts.isRecordingWidgetIntent(context,
+                new Intent(widget).putExtra(RecordingShortcuts.EXTRA_NONCE, UUID.randomUUID().toString())));
+        assertFalse(RecordingShortcuts.isRecordingWidgetIntent(context,
+                new Intent(widget).putExtra(RecordingShortcuts.EXTRA_NONCE, 7)));
+        assertFalse(RecordingShortcuts.isRecordingWidgetIntent(context,
+                new Intent(widget).setComponent(new ComponentName(context, FloatingRecorderService.class))));
+        assertFalse(RecordingShortcuts.isRecordingWidgetIntent(context, new Intent(widget).setAction(Intent.ACTION_MAIN)));
+        assertFalse(RecordingShortcuts.isRecordingWidgetIntent(context,
+                new Intent(widget).addFlags(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY)));
+        assertFalse(RecordingShortcuts.isRecordingWidgetIntent(context, RecordingShortcuts.widgetIntent(context)));
+        assertTrue(preferences.edit().remove(RecordingShortcuts.NONCE_KEY).commit());
+        assertFalse(RecordingShortcuts.isRecordingWidgetIntent(context, widget));
+        assertFalse(preferences.contains(RecordingShortcuts.NONCE_KEY));
+        assertTrue(preferences.edit().putInt(RecordingShortcuts.NONCE_KEY, 7).commit());
+        assertFalse(RecordingShortcuts.isRecordingWidgetIntent(context, widget));
+        assertTrue("Rejecting a malformed stored token does not repair it", preferences.getAll().get(RecordingShortcuts.NONCE_KEY) instanceof Integer);
+    }
+
+    @Test public void recordingWidgetStopCapabilityIsDistinctAndRejectsForgedAuthentication() {
+        RecordingService.Snapshot before = RecordingService.snapshot();
+        Intent stop = RecordingShortcuts.recordingWidgetStopIntent(context, before);
+        assertTrue(RecordingShortcuts.isRecordingWidgetStopIntent(context, stop));
+        assertFalse(RecordingShortcuts.isRecordingWidgetIntent(context, stop));
+        assertFalse(RecordingShortcuts.isRecordingWidgetStopIntent(context, RecordingShortcuts.recordingWidgetIntent(context)));
+        assertEquals(new ComponentName(context, RecordingWidgetControlReceiver.class), stop.getComponent());
+        assertEquals(RecordingShortcuts.ACTION_WIDGET_STOP, stop.getAction());
+        assertEquals(before.entryId, stop.getStringExtra(RecordingShortcuts.EXTRA_WIDGET_ENTRY));
+        assertNotNull("STOP has a distinct PendingIntent data identity", stop.getData());
+        assertEquals("fieldnote", stop.getData().getScheme());
+        assertEquals("recording-widget", stop.getData().getAuthority());
+        assertEquals(before.entryId == null ? "unavailable" : before.entryId, stop.getData().getPathSegments().get(1));
+        assertNull(stop.getClipData());
+        Intent missing = new Intent(stop);
+        missing.removeExtra(RecordingShortcuts.EXTRA_NONCE);
+        assertFalse(RecordingShortcuts.isRecordingWidgetStopIntent(context, missing));
+        assertFalse(RecordingShortcuts.isRecordingWidgetStopIntent(context,
+                new Intent(stop).putExtra(RecordingShortcuts.EXTRA_NONCE, UUID.randomUUID().toString())));
+        assertFalse(RecordingShortcuts.isRecordingWidgetStopIntent(context,
+                new Intent(stop).putExtra(RecordingShortcuts.EXTRA_NONCE, 7)));
+        assertFalse(RecordingShortcuts.isRecordingWidgetStopIntent(context,
+                new Intent(stop).setComponent(new ComponentName(context, MainActivity.class))));
+        assertFalse(RecordingShortcuts.isRecordingWidgetStopIntent(context,
+                new Intent(stop).addFlags(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY)));
+        assertTrue(preferences.edit().remove(RecordingShortcuts.NONCE_KEY).commit());
+        assertFalse(RecordingShortcuts.isRecordingWidgetStopIntent(context, stop));
+        assertFalse(preferences.contains(RecordingShortcuts.NONCE_KEY));
+        assertSame("Creating or validating STOP capabilities never changes recording state", before, RecordingService.snapshot());
     }
 
     private static ShortcutInfo find(List<ShortcutInfo> shortcuts, String id) {

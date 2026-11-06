@@ -2,6 +2,7 @@ package com.fieldnote.app;
 
 import android.Manifest;
 import android.app.Notification;
+import android.app.KeyguardManager;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -20,8 +21,10 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import android.widget.Toast;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -42,6 +45,7 @@ public final class RecordingService extends Service {
     private static final String ACTION_PAUSE_FOR_TEXT = "com.fieldnote.app.PAUSE_RECORDING_FOR_TEXT";
     private static final String CHANNEL = "fieldnote_recording";
     private static final int NOTIFICATION_ID = 1001;
+    static final int WIDGET_SETUP_NOTIFICATION_ID = 1004;
     private static final long MAX_FILE_BYTES = 1024L * 1024L * 1024L;
     private static final int MAX_DURATION_MS = 6 * 60 * 60 * 1000;
     private static final Object STATE_LOCK = new Object();
@@ -111,6 +115,7 @@ public final class RecordingService extends Service {
     private static volatile boolean pauseRequested;
     private static volatile RecordingService activeInstance;
     private HandlerThread recorderThread;
+    private final Handler main = new Handler(Looper.getMainLooper());
     private Handler worker;
     private MediaRecorder recorder;
     private AudioManager.AudioRecordingCallback silenceCallback;
@@ -127,6 +132,10 @@ public final class RecordingService extends Service {
     private long pausedWall;
     private JSONObject pausedMetadata;
     private boolean recorderStarted;
+    private boolean widgetStarted;
+    private volatile boolean foregroundStarted;
+    private volatile boolean admissionOnly;
+    private volatile boolean finishing;
     private volatile boolean destroyed;
     private State terminalState;
     private String terminalMessage;
@@ -148,6 +157,12 @@ public final class RecordingService extends Service {
     }
 
     public static Snapshot snapshot() { return current; }
+
+    /** Internal capability identity: entry IDs can contain several successive audio originals. */
+    static String widgetStopToken(Snapshot expected) {
+        return expected != null && (expected.state == State.STARTING || expected.state == State.RECORDING
+                || expected.state == State.PAUSED) ? expected.token : null;
+    }
 
     public static boolean isRecording() {
         State state = current.state;
@@ -300,6 +315,7 @@ public final class RecordingService extends Service {
 
     private static void broadcast(Context context) {
         context.sendBroadcast(new Intent(ACTION_STATE).setPackage(context.getPackageName()));
+        RecordingWidget.refresh(context);
     }
 
     @Override public void onCreate() {
@@ -320,35 +336,35 @@ public final class RecordingService extends Service {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null) { stopSelf(); return START_NOT_STICKY; }
+        // Even a rejected getForegroundService click must be promoted before stopping.
+        // The brief admission phase needs no microphone grant and performs no provider I/O.
+        boolean widgetRequest = intent != null
+                && RecordingShortcuts.ACTION_WIDGET_RECORD.equals(intent.getAction());
+        if (widgetRequest && !startWidgetAdmission()) return START_NOT_STICKY;
+        if (intent == null || finishing || destroyed) { finishService(); return START_NOT_STICKY; }
+        if (RecordingShortcuts.isRecordingWidgetIntent(this, intent)) {
+            toggleFromWidget(startId);
+            return START_NOT_STICKY;
+        }
         String action = intent.getAction();
         String requestedToken = intent.getStringExtra("token");
-        if (requestedToken == null || !requestedToken.equals(current.token)) return START_NOT_STICKY;
+        if (requestedToken == null || !requestedToken.equals(current.token)) {
+            if (token == null) finishService();
+            return START_NOT_STICKY;
+        }
         if (ACTION_START.equals(action)) {
             if (token != null) return START_NOT_STICKY;
             token = requestedToken;
             project = current.projectUri;
             entryId = current.entryId;
-            try {
-                Notification notification = notification("Starting microphone…");
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
-                } else {
-                    startForeground(NOTIFICATION_ID, notification);
-                }
-            } catch (RuntimeException error) {
-                terminalState = State.ERROR;
-                terminalMessage = "Android denied microphone recording. Check permission and try while Fieldnote is open. "
-                        + safeMessage(error);
-                stopSelf();
-                return START_NOT_STICKY;
-            }
+            if (!startMicrophoneForeground()) return START_NOT_STICKY;
             worker.post(this::beginRecording);
         } else if (ACTION_STOP.equals(action)) {
             synchronized (STATE_LOCK) {
                 if (!requestedToken.equals(current.token)) return START_NOT_STICKY;
                 stopRequested = true;
             }
+            FloatingRecorderService.stopLinkedVideoForAudio(current);
             worker.post(() -> finishRecording("complete", null));
         } else if (ACTION_LOCK.equals(action)) {
             lockRequested = true;
@@ -364,10 +380,193 @@ public final class RecordingService extends Service {
         return START_NOT_STICKY;
     }
 
+    /** A stale Stop is a broadcast, so it never creates a service or foreground obligation. */
+    static void stopFromWidget(Context context, Intent intent) {
+        if (!RecordingShortcuts.isRecordingWidgetStopIntent(context, intent)) return;
+        String expectedEntry = intent.getStringExtra(RecordingShortcuts.EXTRA_WIDGET_ENTRY);
+        String expectedSession = intent.getStringExtra(RecordingShortcuts.EXTRA_WIDGET_SESSION);
+        synchronized (STATE_LOCK) {
+            boolean matches = expectedEntry != null && expectedEntry.equals(current.entryId)
+                    && expectedSession != null && expectedSession.equals(current.token)
+                    && (isRecording() || isPaused());
+            // Keep admission and stop's token snapshot atomic with respect to a new original.
+            if (matches) stop(context);
+        }
+        RecordingWidget.refresh(context);
+    }
+
+    /** A launcher widget click grants microphone foreground admission without an Activity. */
+    private void toggleFromWidget(int startId) {
+        if (token == null && isBusy() && (stopRequested || current.state == State.SAVING)) {
+            // A new widget service can arrive while the previous instance's worker
+            // finishes teardown. It owns no recorder and must not inherit that token.
+            finishService();
+            return;
+        }
+        if (!isBusy() && FloatingRecorderService.isBusyForHandoff()) {
+            widgetSetupRequired("Finish the floating capture first, then tap the recording widget again.", startId);
+            return;
+        }
+        boolean stopExisting = false;
+        boolean admitQueuedStart = false;
+        synchronized (STATE_LOCK) {
+            if (isRecording() || isPaused()) {
+                // Repeated taps during provider lookup or prepare() cancel the same request.
+                // Never replace its token, project, or original with a second recording.
+                stopRequested = true;
+                stopExisting = true;
+                if (token == null) {
+                    // A normal in-app START may still be queued behind this widget intent.
+                    token = current.token;
+                    project = current.projectUri;
+                    entryId = current.entryId;
+                    admitQueuedStart = true;
+                }
+            } else {
+                // The old service must finish teardown before another original can begin.
+                if (isBusy() || token != null || destroyed) return;
+                token = UUID.randomUUID().toString();
+                entryId = UUID.randomUUID().toString();
+                stopRequested = false;
+                lockRequested = true;
+                pauseRequested = false;
+                widgetStarted = true;
+                current = new Snapshot(State.STARTING, null, entryId, 0, 0, 0, true, null, token);
+            }
+        }
+        if (stopExisting) {
+            if (admitQueuedStart) {
+                if (startMicrophoneForeground()) worker.post(this::beginRecording);
+            }
+            stop(this);
+            return;
+        }
+        broadcast(this);
+        PowerManager power = getSystemService(PowerManager.class);
+        KeyguardManager keyguard = getSystemService(KeyguardManager.class);
+        if (power == null || !power.isInteractive() || (keyguard != null && keyguard.isKeyguardLocked())) {
+            widgetSetupRequired("Unlock the phone, then tap the recording widget again.");
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            widgetSetupRequired("Open Fieldnote and allow microphone access, then tap the recording widget again.");
+            return;
+        }
+        // Declare the while-in-use type before any provider lookup outlives the click grant.
+        if (!startMicrophoneForeground()) return;
+        worker.post(() -> {
+            try {
+                if (stopRequested || destroyed) { cancelBeforeRecording(); return; }
+                Uri destination = store.lastCreatedProject();
+                if (destination == null) throw new IOException("Create a project in Fieldnote, then tap the recording widget again.");
+                if (store.readCachedProject(destination) == null) {
+                    if (!store.isArchive(destination)) throw new IOException("Open and convert the latest project in Fieldnote first.");
+                    store.readProject(destination);
+                }
+                if (stopRequested || destroyed) { cancelBeforeRecording(); return; }
+                // Overlay state belongs to the main thread. Recheck after provider I/O.
+                main.post(() -> {
+                    boolean floatingBusy = FloatingRecorderService.isBusyForHandoff();
+                    worker.post(() -> {
+                        if (stopRequested || destroyed) { cancelBeforeRecording(); return; }
+                        if (floatingBusy) {
+                            widgetSetupRequired("Finish the floating capture first, then tap the recording widget again.");
+                            return;
+                        }
+                        project = destination;
+                        update(State.STARTING, null);
+                        NotificationManager notifications = getSystemService(NotificationManager.class);
+                        if (notifications != null) notifications.cancel(WIDGET_SETUP_NOTIFICATION_ID);
+                        beginRecording();
+                    });
+                });
+            } catch (Exception failure) {
+                if (stopRequested || destroyed) cancelBeforeRecording();
+                else widgetSetupRequired(safeMessage(failure));
+            }
+        });
+    }
+
+    private boolean startWidgetAdmission() {
+        if (foregroundStarted) return true; // Never downgrade an existing microphone service.
+        try {
+            Notification preparing = new Notification.Builder(this, CHANNEL)
+                    .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                    .setContentTitle("Preparing Fieldnote recording")
+                    .setOngoing(true).setOnlyAlertOnce(true)
+                    .setCategory(Notification.CATEGORY_SERVICE)
+                    .setVisibility(Notification.VISIBILITY_PRIVATE).build();
+            if (Build.VERSION.SDK_INT >= 34)
+                startForeground(NOTIFICATION_ID, preparing, ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE);
+            else if (Build.VERSION.SDK_INT >= 29)
+                startForeground(NOTIFICATION_ID, preparing, ServiceInfo.FOREGROUND_SERVICE_TYPE_NONE);
+            else startForeground(NOTIFICATION_ID, preparing);
+            foregroundStarted = true;
+            admissionOnly = true;
+            return true;
+        } catch (RuntimeException failure) {
+            widgetSetupRequired("Android could not start the recording widget. Open Fieldnote and try again. "
+                    + safeMessage(failure));
+            return false;
+        }
+    }
+
+    private boolean startMicrophoneForeground() {
+        try {
+            Notification notification = notification("Starting microphone…");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+            else startForeground(NOTIFICATION_ID, notification);
+            foregroundStarted = true;
+            admissionOnly = false;
+            return true;
+        } catch (RuntimeException failure) {
+            String explanation = "Android denied microphone recording. Check permission and try while Fieldnote is open. "
+                    + safeMessage(failure);
+            if (widgetStarted) widgetSetupRequired(explanation);
+            else { terminalState = State.ERROR; terminalMessage = explanation; stopSelf(); }
+            return false;
+        }
+    }
+
+    /** Setup is explicit: a failed widget tap never launches an Activity or an overlay. */
+    private void widgetSetupRequired(String explanation) {
+        widgetSetupRequired(explanation, 0);
+    }
+
+    private void widgetSetupRequired(String explanation, int startId) {
+        terminalState = State.ERROR;
+        terminalMessage = explanation;
+        main.post(() -> {
+            Toast.makeText(getApplicationContext(), explanation, Toast.LENGTH_LONG).show();
+            NotificationManager notifications = getSystemService(NotificationManager.class);
+            PendingIntent setup = PendingIntent.getActivity(this, 2005, RecordingShortcuts.recordIntent(this),
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            Notification notification = new Notification.Builder(this, CHANNEL)
+                    .setSmallIcon(R.drawable.ic_launcher).setContentTitle("Set up the recording widget")
+                    .setContentText(explanation).setStyle(new Notification.BigTextStyle().bigText(explanation))
+                    .setContentIntent(setup).setAutoCancel(true).setVisibility(Notification.VISIBILITY_PRIVATE).build();
+            try { if (notifications != null) notifications.notify(WIDGET_SETUP_NOTIFICATION_ID, notification); }
+            catch (RuntimeException ignored) { /* The toast still explains setup without notification access. */ }
+        });
+        finishService();
+    }
+
+    private void cancelBeforeRecording() {
+        releaseRecorder();
+        releaseWakeLock();
+        abandon("The widget recording was cancelled before capture started.");
+        MetadataCollector.stop(this);
+        terminalState = State.IDLE;
+        terminalMessage = null;
+        finishService();
+    }
+
     private void beginRecording() {
         try {
             if (stopRequested) {
-                fail("The press was too short to start recording. Hold the microphone a little longer.", null);
+                if (widgetStarted) cancelBeforeRecording();
+                else fail("The press was too short to start recording. Hold the microphone a little longer.", null);
                 return;
             }
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -391,7 +590,8 @@ public final class RecordingService extends Service {
                 put(startMetadata, "audio", audioSettings(44100));
             }
             if (stopRequested) {
-                fail("The press was too short to start recording. Hold the microphone a little longer.", null);
+                if (widgetStarted) cancelBeforeRecording();
+                else fail("The press was too short to start recording. Hold the microphone a little longer.", null);
                 return;
             }
             registerSilenceDetection();
@@ -613,6 +813,7 @@ public final class RecordingService extends Service {
         releaseWakeLock();
         abandon(message);
         MetadataCollector.stop(this);
+        if (widgetStarted) { widgetSetupRequired(message); return; }
         terminalState = State.ERROR;
         terminalMessage = message;
         finishService();
@@ -740,8 +941,16 @@ public final class RecordingService extends Service {
     }
 
     private void finishService() {
+        finishing = true;
+        foregroundStarted = false;
+        admissionOnly = false;
         stopForeground(STOP_FOREGROUND_REMOVE);
         if (!destroyed) stopSelf();
+    }
+
+    @Override public void onTimeout(int startId) {
+        // Admission normally ends synchronously, before any storage access.
+        if (admissionOnly) finishService();
     }
 
     @Override public void onTaskRemoved(Intent rootIntent) {
@@ -754,12 +963,16 @@ public final class RecordingService extends Service {
         synchronized (STATE_LOCK) {
             destroyed = true;
             if (activeInstance == this) activeInstance = null;
-            stopRequested = true;
+            if (token != null && token.equals(current.token)) stopRequested = true;
         }
         if (worker != null) {
             worker.post(() -> {
                 if (recorderStarted) finishRecording("interrupted", "Android stopped the recording service.");
-                else { releaseRecorder(); releaseWakeLock(); MetadataCollector.stop(this); }
+                else {
+                    releaseRecorder();
+                    releaseWakeLock();
+                    if (token != null) MetadataCollector.stop(this);
+                }
                 // ZIP publication continues independently after local staging. Do not accept
                 // another recording until this service instance is fully torn down.
                 // Otherwise a rapid next press can reach the old instance while stopSelf is pending.

@@ -1,84 +1,109 @@
-# Beta 22 validation
+# Beta 23 validation
 
-Version **0.2.0-beta.22**, code **23**, was validated locally on 2026-11-06.
-The [GitHub release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.22)
-provides the APK. Package: `com.fieldnote.app`; size: **220,412 bytes**.
+Version **0.2.0-beta.23**, code **24**, was validated locally on 2026-11-06.
+The [GitHub release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.23)
+provides the APK. Package: `com.fieldnote.app`; size: **225,540 bytes**.
 
-SHA-256: `e182a0175533a0c74a23faa6d04e775f6e3857378bb5ddb4549a5a58a1c1fb7e`.
+SHA-256: `c3e420b48810077a736168ae7aef7273b0bd181b318248f4c610bbba9c6429b8`.
 
-## Changes and regression coverage
+## Changes and corrections
 
-**Record now** starts hands-free audio in the main recorder, using the latest-created
-project. If a floating control is open, it closes before fresh audio starts. An
-existing recording retains its original file and project and remains locked during
-handoff. This avoids asynchronous overlay teardown stopping a new recording.
-**Floating mic** is separately pinnable from Settings. Existing shortcut
-authentication, history guards, and duplicate-launch protection remain.
+The **Recorder** widget starts and stops audio inside the launcher using the
+latest-created project. It requires neither camera nor overlay permission and
+never automatically opens an Activity for setup. Existing **Record now** and
+**Floating mic** shortcuts remain available. Active microphones use a purple
+gradient and halo; app and floating halos animate when system animations allow.
+The widget uses a static purple glow, consistent with its RemoteViews layout.
 
-The floating microphone has a six-dot drag handle and remembers its position.
-Movement preserves locked narration and keeps room for the gesture targets. A
-separate pointer owns movement; another finger cannot steal an active mic hold.
-The new down-right X gesture closes the control and finalizes active audio/video,
-including locked audio. This close direction is enabled only in the floating host.
+The sweep found and corrected these lifecycle cases:
 
-Eight new JVM cases and ten native cases cover close boundaries and guidance,
-shortcut publication and handoff, movement and reopening, pointer ownership,
-locked-audio closure, and linked/standalone video closure. Native screenshots were
-inspected for the handle and X target. Independent review found no further
-consequential issue in the changed paths. No dependency update or broad refactor
-was made.
+- A stale purple widget could create a foreground service just to reject Stop,
+  causing an Android foreground-promotion crash. Stop now uses a private,
+  authenticated broadcast bound to the exact entry and recording-session token.
+  It cannot start a new original or stop a later original in the same entry.
+- An ordinary service PendingIntent passed instrumentation but was rejected by
+  Android after a cold launcher tap. Start now uses a direct foreground-service
+  PendingIntent. A brief permission-free admission phase precedes microphone
+  promotion and project I/O; rejected setup ends it safely. This uses Android's
+  [short service type](https://developer.android.com/develop/background-work/services/fgs/service-types#short-service)
+  on API 34 and later and the documented
+  [widget/visible-app exemptions](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start#wiu-restrictions).
+- Stopping narration through the widget or audio notification now finalizes its
+  linked floating video, even while the original mic hold remains down.
+- A floating control for another project remains purple while audio is active
+  and can close via down-right swipe. Its other gestures cannot capture, mark,
+  or stop that other project's recording.
+
+Independent reviews covered session ownership, foreground admission, private
+component boundaries, linked-video cleanup, and visual state. No dependency
+update or broad refactor was made.
 
 ## Final build and tests
 
 Environment: Windows, JDK 21, Gradle 8.14.6, Android Gradle Plugin 8.6.0,
-SDK 35, and Android 16 / API 36. The final complete gate passed in **5m 22s**.
-Commands are in [Building Fieldnote](../android/BUILDING.md).
+compile/target SDK 35, and Android 16 / API 36. Commands are documented in
+[Building Fieldnote](../android/BUILDING.md). Validation ran
+`assembleRelease`, `testDebugUnitTest`, `lintRelease`, and
+`connectedDebugAndroidTest` with offline dependencies and the dedicated emulator.
+The full native run completed 144 cases with one widget-host teardown failure.
+After correcting only that test class, all seven widget cases passed in a Gradle
+rerun using `-Pandroid.testInstrumentationRunnerArguments.class=com.fieldnote.app.DirectWidgetInstrumentedTest`,
+together with release assembly, JVM tests, and lint. Hash comparison confirmed
+production sources and every unaffected test class were unchanged. Results below
+combine the 137 unaffected native cases with those seven freshly verified cases.
 
 | Check | Result |
 | --- | --- |
 | Release assembly | Passed |
 | JVM tests | 70 passed |
-| Native API 36 emulator tests | 135 passed |
-| Final Android total | **205 passed; 0 failures, errors, or skips** |
-| Release lint | **0 errors, 63 warnings, 1 informational finding** |
-| Signed release update from beta 21 | Passed; microphone grant preserved |
-| Signed release launch | Passed; both Settings shortcut actions visible |
+| Native API 36 emulator tests | 144 passed |
+| Final Android total | **214 passed; 0 failures, errors, or skips** |
+| Release lint | **0 errors, 66 warnings, 1 informational finding** |
+| Signed release update from beta 22 | Passed; microphone grant preserved |
+| Signed release launch | Passed; folder, shortcut, and Recorder-widget settings verified |
 
-The final suite also covers existing capture, markers, playback, text-save retry,
-search/tags, notes navigation, widget behavior, security controls, and project ZIP
-publication. Source hashes and packaged APK bytes matched the tested build.
+The suite includes existing capture, repeated photo/video gestures, markers,
+playback, text-save retry, search/tags, notes navigation, security controls, and
+project ZIP publication. New native cases use a real foreign-UID AppWidgetHost
+and real encoded media, including rapid cancellation and cached Stop actions.
+Source hashes remained unchanged through the final gate and artifact checks.
 The unchanged browser prototype was not retested.
 
-## Timing failures and follow-ups
+## Cold widget acceptance
 
-The first full run had two missed subsequent touches after upward lock, affecting
-the move-handle and marker tests. The test helper checked the 230 ms return
-animation but could proceed before the 240 ms compact-window contraction finished.
-It now also requires matching compact window/surface dimensions and completed
-layout, and explicitly asserts that the next DOWN is received. All 15 focused
-floating cases passed afterward. This corrects test readiness; it is not a claim
-that every rapid physical interaction is proven reliable.
+After instrumentation exited, the target process was killed and camera permission
+revoked; overlay permission was also denied. A tap in the still-visible foreign
+widget host started a real microphone foreground service (type `0x80`) without
+opening Fieldnote or a floating window. The widget turned purple. A second tap
+stopped audio and published a second distinct AAC original into the same project
+ZIP; its stored byte count and encoded duration were checked.
 
-A second full run had one failure in the existing rapid-photo/audio-duration case.
-Logs showed an AudioSource overrun, delayed system frames, and a first-track offset
-of 628,775 microseconds, beyond the test's 500 ms startup allowance. This supports
-runtime scheduling delay as a possible cause, without establishing a production
-fix. Failure messages now include measured durations. The same case passed on a
-fresh emulator, then all 135 native cases passed in the final complete run.
-No duration tolerance, outcome assertion, timeout, or lint gate was relaxed, and
-no automatic retry was added to the suite. Failed-run evidence was retained locally.
+Actual `RECORD_AUDIO` runtime permission was then revoked outside instrumentation.
+The next tap stayed on the host, showed the setup notification, and left no
+recording service or new original. No AndroidRuntime crash appeared during these
+cold checks. Purple widget and held/locked app screenshots were visually inspected.
+
+An earlier AppOps-denial test did not model this correctly because instrumentation
+could still record. It was replaced by the actual cold runtime-permission check,
+not a relaxed assertion. The test host also now resolves the numeric Android user
+before widget binding: API 36 rejected `--user current` as the unresolved ID -2.
+The first complete run also exposed a teardown routing error: ActivityScenario's
+helper could sit above the widget host, so CLOSE created a second instance.
+Adding CLEAR_TOP targets the original host and preserves its destruction assertion.
+Failed-run evidence was retained locally; no outcome or duration tolerance was
+relaxed and no automatic retry was added.
 
 ## APK and coverage limits
 
 Signature Scheme v2 verification passed with the existing beta certificate.
-Package checks confirmed code 23, minimum API 26, target API 35, a non-debuggable
-release, no INTERNET permission, and absence of test-only components. The APK and
-checksum identify the tested artifact; publication also verifies public download
-bytes against that artifact.
+Package inspection confirmed code 24, minimum API 26, target API 35, a
+non-debuggable release, no INTERNET permission, and no test-only components.
+Publication verifies the public APK bytes against the tested artifact.
 
 Native tests use the debug variant, an emulated camera, no host microphone audio,
 and NVIDIA host rendering. Signed-release checks cover upgrade, permission
-retention, launch, and shortcut-action visibility, not a full data migration.
+retention, launch, and settings, not a full data migration. Cold widget checks
+use the debug APK without instrumentation running in its process.
 Physical Pixel/GrapheneOS, actual Smart Launcher placement, haptic feel, motion
 sensitivity, older Android versions, and other storage providers remain unverified.
 Root is not used. See the [beta guide](../android/BETA.md).

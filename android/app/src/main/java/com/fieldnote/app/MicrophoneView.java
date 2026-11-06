@@ -28,12 +28,15 @@ public class MicrophoneView extends View {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF drawingRect = new RectF();
     private final boolean dark;
-    private final int panel, accent, recordingColor;
+    private final int recordingColor;
     private final ActionListener actions;
     private final Shader idleGradient;
     private final Shader recordingGradient = new LinearGradient(-.65f, -1f, .7f, 1f,
-            new int[]{0xff65a0ff, 0xff3e75ff, 0xff294dce}, null, Shader.TileMode.CLAMP);
+            new int[]{0xffc99bff, 0xff9455e8, 0xff6227b8}, null, Shader.TileMode.CLAMP);
     private final Shader haloGradient;
+    private final Shader recordingHaloGradient = new RadialGradient(0, 0, 1,
+            new int[]{Color.TRANSPARENT, 0xffbb88ff, Color.TRANSPARENT},
+            new float[]{.70f, .86f, 1f}, Shader.TileMode.CLAMP);
     public boolean recording, locked;
     private long pressStartedAt;
 
@@ -41,8 +44,6 @@ public class MicrophoneView extends View {
                           int recordingColor, ActionListener actions) {
         super(context);
         this.dark = dark;
-        this.panel = panel;
-        this.accent = accent;
         this.recordingColor = recordingColor;
         this.actions = actions;
         idleGradient = new LinearGradient(-.65f, -1f, .7f, 1f,
@@ -100,50 +101,48 @@ public class MicrophoneView extends View {
                 hostWidth() / 2f - dp(RecordingGesture.ACTIVATION_DISTANCE_DP) - dp(4)));
         float restRadius = Math.min(cx, cy) - dp(16);
         float radius = restRadius + (compactRadius - restRadius) * compact;
-        float pulse = .5f;
+        boolean animate = ValueAnimator.areAnimatorsEnabled();
+        long now = SystemClock.uptimeMillis();
+        float pulse = animate && (recording || isPressed())
+                ? .5f + .5f * (float) Math.sin((recording ? now : now - pressStartedAt) * .0035) : .5f;
         if (isPressed()) {
-            long elapsed = SystemClock.uptimeMillis() - pressStartedAt;
-            boolean animate = ValueAnimator.areAnimatorsEnabled();
-            pulse = animate ? .5f + .5f * (float) Math.sin(elapsed * .005) : .5f;
+            long elapsed = now - pressStartedAt;
             // The visual tremor never changes the host's touch coordinates or guide origin.
             if (animate) {
                 float density = getResources().getDisplayMetrics().density;
                 cx += (float) Math.sin(elapsed * .045) * density * .65f;
                 cy += (float) Math.sin(elapsed * .053) * density * .45f;
-                postInvalidateOnAnimation();
             }
         }
+        // Locked or shortcut-started narration radiates too, without needing a held finger.
+        if (animate && (recording || isPressed())) postInvalidateOnAnimation();
         paint.setStyle(Paint.Style.FILL);
         canvas.save();
         canvas.translate(cx, cy);
-        float haloRadius = radius + dp(isPressed() ? 15 : 11);
+        float haloRadius = radius + dp(recording ? 12 + 4 * pulse : isPressed() ? 15 : 11);
         canvas.scale(haloRadius, haloRadius);
-        paint.setShader(haloGradient);
-        paint.setAlpha(isPressed() ? Math.round(52 + 28 * pulse) : dark ? 23 : 14);
+        paint.setShader(recording ? recordingHaloGradient : haloGradient);
+        paint.setAlpha(recording ? Math.round(100 + 50 * pulse)
+                : isPressed() ? Math.round(52 + 28 * pulse) : dark ? 23 : 14);
         canvas.drawCircle(0, 0, 1, paint);
         canvas.restore();
         paint.setAlpha(255);
         paint.setShader(null);
-        if (locked && recording) {
-            paint.setColor(panel);
-            canvas.drawCircle(cx, cy, radius, paint);
-        } else {
-            canvas.save();
-            canvas.translate(cx, cy);
-            canvas.scale(radius, radius);
-            paint.setShader(recording ? recordingGradient : idleGradient);
-            canvas.drawCircle(0, 0, 1, paint);
-            canvas.restore();
-            paint.setShader(null);
-        }
+        canvas.save();
+        canvas.translate(cx, cy);
+        canvas.scale(radius, radius);
+        paint.setShader(recording ? recordingGradient : idleGradient);
+        canvas.drawCircle(0, 0, 1, paint);
+        canvas.restore();
+        paint.setShader(null);
         paint.setStyle(Paint.Style.STROKE);
-        paint.setColor(locked && recording ? recordingColor : dark ? 0x785e92d9 : 0x805c8dcd);
+        paint.setColor(recording ? recordingColor : dark ? 0x785e92d9 : 0x805c8dcd);
         paint.setStrokeWidth(dp(locked && recording ? 5 : 1));
         canvas.drawCircle(cx, cy, radius + dp(3), paint);
-        paint.setColor(locked && recording ? accent : 0x24ffffff);
+        paint.setColor(locked && recording ? 0xffe4ccff : 0x24ffffff);
         paint.setStrokeWidth(dp(1));
         canvas.drawCircle(cx, cy, radius - dp(2), paint);
-        paint.setColor(locked && recording ? accent : Color.WHITE);
+        paint.setColor(locked && recording ? 0xfff4eaff : Color.WHITE);
         canvas.save();
         // A floating host can use a smaller resting circle than the full notebook.
         // Keep the existing scale whenever it fits, and leave room for the icon's stroke.

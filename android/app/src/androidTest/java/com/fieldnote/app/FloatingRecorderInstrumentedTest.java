@@ -255,7 +255,7 @@ public final class FloatingRecorderInstrumentedTest {
         assertEquals("Reopening restores the horizontal position", moved[0], restored[0], 2f);
         assertEquals("Reopening restores the vertical position", moved[1], restored[1], 2f);
         assertEquals(0, store.readProject(project).getJSONArray("entries").length());
-        saveScreenshot("beta22-floating-moved.png");
+        saveScreenshot("beta23-floating-moved.png");
     }
 
     @Test public void draggingFloatingHandleKeepsTheSameLockedNarration() throws Exception {
@@ -311,6 +311,22 @@ public final class FloatingRecorderInstrumentedTest {
         assertFalse("Close must not leave a hidden locked microphone", RecordingService.isBusy());
     }
 
+    @Test public void serviceStopFinalizesVideoLinkedToTheSameHeldNarration() throws Exception {
+        launchOverlay();
+        RecordingService.Snapshot started = holdAudio();
+        touch.move(128, 0);
+        awaitVideoFrames();
+        saveScreenshot("beta23-floating-purple-video.png");
+        onMain(() -> RecordingService.stop(context));
+        // Do not release the finger first: widget/notification Stop must end the linked video itself.
+        await("external audio Stop also finalizes its linked overlay video", 25_000,
+                () -> !RecordingService.isBusy() && !overlayCameraBusy());
+        touch.cancel();
+        JSONObject index = awaitPublished(1, 0, 1);
+        assertSingleEntry(index, started.entryId, 2);
+        assertRealOriginals(index);
+    }
+
     @Test public void southeastCloseAfterVideoCenterKeepsLinkedAudioAndVideo() throws Exception {
         launchOverlay();
         RecordingService.Snapshot started = holdAudio();
@@ -325,6 +341,59 @@ public final class FloatingRecorderInstrumentedTest {
         assertSingleEntry(index, started.entryId, 2);
         assertRealOriginals(index);
         assertFalse(FloatingRecorderService.isShowing());
+    }
+
+    @Test public void foreignProjectNarrationAllowsOnlyClosingTheFloatingControl() throws Exception {
+        Uri overlayProject = project;
+        launchOverlay();
+        Uri narrationProject = createProject("Narration outside the floating project");
+        onMain(() -> context.startActivity(new Intent(context, MainActivity.class).setAction(Intent.ACTION_MAIN)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)));
+        await("the owned Activity is visible to start the other project's narration", 10_000,
+                () -> onMainValue(() -> activity != null && activity.hasWindowFocus()
+                        && ActivityLifecycleMonitorRegistry.getInstance().getLifecycleStageOf(activity) == Stage.RESUMED));
+        onMain(() -> {
+            RecordingService.start(activity, narrationProject, UUID.randomUUID().toString());
+            RecordingService.lock(activity);
+        });
+        await("the other project records real narration", 15_000,
+                () -> RecordingService.snapshot().state == RecordingService.State.RECORDING
+                        && RecordingService.snapshot().elapsedMs() >= 700);
+        RecordingService.Snapshot started = RecordingService.snapshot();
+        assertEquals(narrationProject, started.projectUri);
+        onMain(() -> activity.moveTaskToBack(true));
+        await("the launcher receives the floating control again", 10_000,
+                () -> onMainValue(() -> ActivityLifecycleMonitorRegistry.getInstance().getLifecycleStageOf(activity) == Stage.STOPPED));
+        assertEquals(overlayProject, onMainValue(() -> (Uri) field(requireService(), "project")));
+        awaitMicHome();
+        touch = new TouchPath();
+        touch.press();
+        touch.up(0, 0);
+        assertHeldIdentity(started, true);
+
+        awaitMicHome();
+        touch = new TouchPath();
+        touch.press();
+        for (float[] direction : new float[][]{{-128, 0}, {128, 0}, {0, 128}, {90, -90}, {0, -128}}) {
+            touch.move(direction[0], direction[1]);
+            touch.move(0, 0);
+        }
+        assertHeldIdentity(started, true);
+        assertEquals("Denied gestures do not add markers to the other original", 0, RecordingService.snapshot().markerCount);
+        assertFalse("Denied gestures do not open the camera", overlayCameraBusy());
+        assertNull("Denied gestures do not open text entry", onMainValue(() -> field(requireService(), "textDialog")));
+        touch.move(90, 90);
+        await("down-right closes this overlay independently of the other project's audio", 15_000,
+                () -> activeService() == null);
+        touch.cancel();
+        assertHeldIdentity(started, true);
+        assertFalse(FloatingRecorderService.isShowing());
+        assertEquals("The unrelated overlay project stays empty", 0, store.readProject(overlayProject).getJSONArray("entries").length());
+        onMain(() -> RecordingService.stop(context));
+        project = narrationProject;
+        JSONObject index = awaitPublished(1, 0, 0);
+        assertSingleEntry(index, started.entryId, 1);
+        assertRealOriginals(index);
     }
 
     @Test public void southeastCloseFinalizesAnActiveStandaloneVideoWithEmbeddedAudio() throws Exception {
@@ -595,10 +664,10 @@ public final class FloatingRecorderInstrumentedTest {
         touch = new TouchPath();
         if (inspectGuide) {
             touch.press();
-            saveScreenshot("beta22-floating-guide-center.png");
+            saveScreenshot("beta23-floating-guide-center.png");
             touch.move(65, 65);
             assertTrue("Approaching the close target must keep the overlay open", FloatingRecorderService.isShowing());
-            saveScreenshot("beta22-floating-close-guide.png");
+            saveScreenshot("beta23-floating-close-guide.png");
             touch.move(90, 90);
             touch.cancel();
         } else touch.quickSoutheastSwipe();

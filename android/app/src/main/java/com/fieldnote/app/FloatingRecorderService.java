@@ -92,7 +92,7 @@ public final class FloatingRecorderService extends Service {
     private AppOpsManager appOps;
     private Uri project;
     private CaptureRef heldCapture, pendingText, pendingVideo, markerCapture;
-    private boolean touching, touchClick, stopOnRelease, startedByTouch;
+    private boolean touching, touchClick, stopOnRelease, startedByTouch, closeOnlyTouch;
     private int touchPointerId = -1;
     private int movePointerId = -1, moveStartX, moveStartY;
     private boolean moving, moveDragged;
@@ -133,8 +133,22 @@ public final class FloatingRecorderService extends Service {
     /** Main-thread handoff gate, including a video that owns an embedded microphone track. */
     public static boolean isBusyForHandoff() {
         FloatingRecorderService service = active;
-        return service != null && (service.widgetResolving || service.moving || isCameraBusy()
+        return service != null && (service.widgetResolving || service.touching || service.moving || isCameraBusy()
                 || service.textDialog != null || service.pendingText != null || service.textSaving);
+    }
+
+    /** Main-thread audio Stop also finishes video linked by this overlay to that original. */
+    static void stopLinkedVideoForAudio(RecordingService.Snapshot expected) {
+        FloatingRecorderService service = active;
+        if (service == null || expected == null) return;
+        CaptureRef target = CaptureRef.of(expected);
+        Runnable stop = () -> {
+            if (active == service && !service.closing && !service.destroyed
+                    && service.sameProject(expected) && target.matches(RecordingService.snapshot()))
+                service.stopGestureVideo();
+        };
+        if (Looper.myLooper() == Looper.getMainLooper()) stop.run();
+        else service.main.post(stop);
     }
 
     /** Hiding preserves an explicitly locked audio recording, which has its own notification. */
@@ -289,7 +303,7 @@ public final class FloatingRecorderService extends Service {
         muted = Color.parseColor(dark ? "#ABC0DB" : "#536C87");
         int panel = Color.parseColor(dark ? "#172943" : "#E7F0FF");
         int accent = Color.parseColor(dark ? "#91C5FF" : "#2C68B2");
-        int recordingColor = Color.parseColor(dark ? "#3E75FF" : "#1648C8");
+        int recordingColor = Color.parseColor(dark ? "#C69CFF" : "#7C3AED");
         gesture = new RecordingGesture(dp(RecordingGesture.ACTIVATION_DISTANCE_DP), dp(RecordingGesture.HOME_RADIUS_DP), true);
         surface = new FrameLayout(visualContext);
         surface.setClipChildren(false);
@@ -494,7 +508,7 @@ public final class FloatingRecorderService extends Service {
     };
 
     private final Runnable beginHeldRecording = () -> {
-        if (!touching || stopOnRelease || gesture.getDirection() != RecordingGesture.Direction.NONE || !canStartAudio()) return;
+        if (!touching || closeOnlyTouch || stopOnRelease || gesture.getDirection() != RecordingGesture.Direction.NONE || !canStartAudio()) return;
         startAudio();
         heldCapture = CaptureRef.of(RecordingService.snapshot());
         startedByTouch = true;
@@ -508,11 +522,12 @@ public final class FloatingRecorderService extends Service {
                 if (capture.state == RecordingService.State.PAUSED && sameProject(capture)) {
                     openText(capture.projectUri, capture.entryId, CaptureRef.of(capture)); return true;
                 }
-                if (RecordingService.isBusy() && !RecordingService.isRecording()) return true;
-                if (RecordingService.isRecording() && !sameProject(capture)) return true;
+                boolean foreignCapture = RecordingService.isBusy() && !sameProject(capture);
+                if (RecordingService.isBusy() && !RecordingService.isRecording() && !foreignCapture) return true;
                 touching = true;
+                closeOnlyTouch = foreignCapture;
                 touchPointerId = event.getPointerId(event.getActionIndex());
-                stopOnRelease = RecordingService.isRecording();
+                stopOnRelease = !closeOnlyTouch && RecordingService.isRecording();
                 startedByTouch = false;
                 heldCapture = stopOnRelease ? CaptureRef.of(capture) : null;
                 // Take the physical center before resizing. Both window sizes retain this center.
@@ -527,7 +542,8 @@ public final class FloatingRecorderService extends Service {
                 gesture.onDownAt(touchX, touchY, event.getRawX(), event.getRawY());
                 guide.begin(gestureSizePx / 2f, gestureSizePx / 2f);
                 guide.update(event.getRawX() - touchX, event.getRawY() - touchY, RecordingGesture.Direction.NONE, gesture.isArmed());
-                if (!stopOnRelease) main.postDelayed(beginHeldRecording, HOLD_DELAY_MS);
+                if (closeOnlyTouch) toast("Another project is recording. Swipe down-right to close this control.");
+                else if (!stopOnRelease) main.postDelayed(beginHeldRecording, HOLD_DELAY_MS);
                 return true;
             case MotionEvent.ACTION_MOVE:
                 if (touching) {
@@ -566,6 +582,7 @@ public final class FloatingRecorderService extends Service {
         if (!touching) return;
         main.removeCallbacks(beginHeldRecording);
         touching = false;
+        closeOnlyTouch = false;
         microphone.home();
         guide.finish();
         if (gesture.getDirection() == RecordingGesture.Direction.RIGHT && (stopOnRelease || startedByTouch))
@@ -583,11 +600,18 @@ public final class FloatingRecorderService extends Service {
     private void recordMove(float rawX, float rawY) {
         if (!touching || !captureAllowed()) return;
         RecordingGesture.Direction before = gesture.getDirection();
-        RecordingGesture.Direction direction = gesture.update(rawX, rawY);
+        float dx = rawX - touchX, dy = rawY - touchY;
+        // An overlay for another project can still close, but never takes ownership
+        // of that narration. Ignored directions cannot latch or falsely rearm home.
+        boolean allowedMotion = !closeOnlyTouch
+                || Math.hypot(dx, dy) <= dp(RecordingGesture.HOME_RADIUS_DP)
+                || RecordingGesture.candidateDirection(dx, dy, true) == RecordingGesture.Direction.CLOSE;
+        RecordingGesture.Direction direction = allowedMotion ? gesture.update(rawX, rawY) : before;
         // Keep the moving artwork inside the finite window while intent uses the full raw path.
         float max = (gestureSizePx - dp(MIC_SIZE_DP)) / 2f;
         microphone.follow(Math.max(-max, Math.min(max, rawX - touchX)), Math.max(-max, Math.min(max, rawY - touchY)));
-        guide.update(rawX - touchX, rawY - touchY, direction, gesture.isArmed());
+        guide.update(allowedMotion ? dx : 0, allowedMotion ? dy : 0, direction, gesture.isArmed());
+        if (closeOnlyTouch && direction != RecordingGesture.Direction.CLOSE) return;
         if (before == RecordingGesture.Direction.RIGHT && direction != RecordingGesture.Direction.RIGHT) stopGestureVideo();
         if (direction == before || direction == RecordingGesture.Direction.NONE) return;
         main.removeCallbacks(beginHeldRecording);
@@ -617,7 +641,7 @@ public final class FloatingRecorderService extends Service {
     private boolean sameProject(RecordingService.Snapshot capture) { return project != null && project.equals(capture.projectUri); }
     private boolean cameraWorkPending() { return !photos.isEmpty() || (camera != null && camera.isBusy()); }
     private boolean canStartAudio() {
-        return captureAllowed() && !moving && !RecordingService.isBusy() && !cameraWorkPending() && pendingVideo == null
+        return captureAllowed() && !moving && !closeOnlyTouch && !RecordingService.isBusy() && !cameraWorkPending() && pendingVideo == null
                 && textDialog == null && pendingText == null && !textSaving
                 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
     }
@@ -634,7 +658,7 @@ public final class FloatingRecorderService extends Service {
     }
 
     private void addMarker() {
-        if (!captureAllowed() || textDialog != null || pendingText != null) return;
+        if (!captureAllowed() || closeOnlyTouch || textDialog != null || pendingText != null) return;
         RecordingService.Snapshot capture = RecordingService.snapshot();
         if (!RecordingService.isBusy()) {
             if (!canStartAudio()) return;
@@ -663,7 +687,7 @@ public final class FloatingRecorderService extends Service {
     }
 
     private void microphoneAction(String kind) {
-        if (!captureAllowed() || textSaving || textDialog != null || pendingText != null) return;
+        if (!captureAllowed() || closeOnlyTouch || textSaving || textDialog != null || pendingText != null) return;
         RecordingService.Snapshot capture = RecordingService.snapshot();
         if (RecordingService.isBusy() && !sameProject(capture)) { toast("Finish the current recording first."); return; }
         if (capture.state == RecordingService.State.PAUSED) {
@@ -798,10 +822,15 @@ public final class FloatingRecorderService extends Service {
         RecordingService.Snapshot capture = RecordingService.snapshot();
         if (heldCapture != null) heldCapture.matches(capture);
         flushMarkers(capture);
-        microphone.recording = sameProject(capture) && (RecordingService.isRecording() || RecordingService.isPaused());
-        microphone.locked = microphone.recording && capture.locked;
-        microphone.setContentDescription(microphone.recording
+        boolean audioActive = RecordingService.isRecording() || RecordingService.isPaused();
+        boolean videoRecording = camera != null && camera.isRecording();
+        microphone.recording = audioActive || videoRecording;
+        microphone.locked = audioActive && capture.locked;
+        microphone.setContentDescription(audioActive && !sameProject(capture)
+                ? "Audio is recording in another project. Swipe down-right to close this control; use the Recorder widget or recording notification to stop audio."
+                : audioActive
                 ? microphone.locked ? "Stop and save locked recording" : "Recording. Slide up to lock or release to save."
+                : videoRecording ? "Video recording. Use Stop video in the camera preview, or swipe the microphone down-right to stop and close."
                 : "Floating microphone. Hold to record. Slide up to lock, left for photo, right for video, down for text, or diagonally upper right for a marker.");
         microphone.invalidate();
         if (capture.error != null && !capture.error.equals(observedError)) toast(capture.error);
@@ -965,6 +994,7 @@ public final class FloatingRecorderService extends Service {
         moving = false;
         movePointerId = -1;
         touching = false;
+        closeOnlyTouch = false;
         touchPointerId = -1;
         heldCapture = null;
         main.removeCallbacks(beginHeldRecording);
@@ -1069,6 +1099,7 @@ public final class FloatingRecorderService extends Service {
         main.removeCallbacks(contractGesture);
         if (touching && heldCapture != null && !RecordingService.snapshot().locked) stopCapture(heldCapture);
         touching = false;
+        closeOnlyTouch = false;
         touchPointerId = -1;
         moving = false;
         movePointerId = -1;

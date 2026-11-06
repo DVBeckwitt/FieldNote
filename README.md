@@ -9,15 +9,15 @@ For transparency, I used Codex Astra to *assist* (not write code or UI blindly) 
 Android lab notebook for audio, photos, video, and text, organized by project.
 
 - **Capture with one hand.** Hold the microphone to record; swipe to take photos, record video, add text, or mark a moment. The camera preview stays with the recording control.
-- **Capture from your home screen.** Record now starts audio in your latest-created project. Use the floating shortcut or mic widget for the hold-and-swipe control over your launcher. Drag its handle to move it; swipe down-right to close and save.
+- **Capture from your home screen.** Tap the Recorder widget to start or stop audio in place. Record now starts in the app; Floating mic keeps the full swipe control over your launcher. New recordings use your latest-created project.
 - **Keep related media together.** Attach photos, video, text, tags, and timestamped markers to an audio note. Search and filter your notes later.
-- **Shake to record.** Shake once to start audio and again to stop while Record is open. Choose dark navy or light blue; dark mode is the default.
+- **See when you're recording.** The blue microphone turns purple with a radiating glow during recording. Choose dark navy or light blue; dark mode is the default. On Record, shake once to start audio and again to stop.
 
 **Your project is one portable ZIP.** Choose its storage location, and Fieldnote updates it in the background. Original files keep their capture times; a JSON index preserves metadata and relationships. Copy the ZIP to keep the complete project—no hidden database required. The folder button beside Settings opens its location in your file explorer.
 
 Works without an account, Google services, or root access. Android 8.0 or newer.
 
-**[Download the beta APK](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.22)**
+**[Download the beta APK](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.23)**
 
 <img src="docs/screenshot.png" alt="Fieldnote in dark mode, showing the large recording control and latest audio/photo note" width="320">
 

@@ -7,6 +7,7 @@ import android.content.SharedPreferences;
 import android.content.pm.ShortcutInfo;
 import android.content.pm.ShortcutManager;
 import android.graphics.drawable.Icon;
+import android.net.Uri;
 import android.os.PersistableBundle;
 import android.text.TextUtils;
 import android.util.Log;
@@ -22,6 +23,10 @@ public final class RecordingShortcuts {
     public static final String ACTION_RECORD = "com.fieldnote.app.action.RECORD_NOW";
     public static final String ACTION_FLOATING = "com.fieldnote.app.action.FLOATING_MIC";
     public static final String ACTION_WIDGET_FLOATING = "com.fieldnote.app.action.WIDGET_FLOATING_MIC";
+    public static final String ACTION_WIDGET_RECORD = "com.fieldnote.app.action.WIDGET_RECORD";
+    public static final String ACTION_WIDGET_STOP = "com.fieldnote.app.action.WIDGET_STOP";
+    static final String EXTRA_WIDGET_ENTRY = "com.fieldnote.app.extra.WIDGET_ENTRY";
+    static final String EXTRA_WIDGET_SESSION = "com.fieldnote.app.extra.WIDGET_SESSION";
     static final String SHORTCUT_ID = "record-now";
     static final String FLOATING_SHORTCUT_ID = "floating-mic";
     static final String NONCE_KEY = "record_shortcut_nonce_v1";
@@ -82,6 +87,44 @@ public final class RecordingShortcuts {
     public static boolean isWidgetIntent(Context context, Intent intent) {
         return authenticated(context, intent, ACTION_WIDGET_FLOATING,
                 new ComponentName(context, FloatingRecorderService.class));
+    }
+
+    /** Direct home-screen audio control; the private service chooses the project. */
+    public static Intent recordingWidgetIntent(Context context) {
+        Intent intent = new Intent(context, RecordingService.class).setAction(ACTION_WIDGET_RECORD);
+        try {
+            return intent.setAction(ACTION_WIDGET_RECORD).putExtra(EXTRA_NONCE, nonce(context));
+        } catch (RuntimeException unavailable) {
+            Log.w("FieldnoteShortcuts", "Widget authentication is unavailable.");
+            return intent;
+        }
+    }
+
+    public static boolean isRecordingWidgetIntent(Context context, Intent intent) {
+        return authenticated(context, intent, ACTION_WIDGET_RECORD,
+                new ComponentName(context, RecordingService.class));
+    }
+
+    /** A purple widget can only stop its displayed original, including after process death. */
+    public static Intent recordingWidgetStopIntent(Context context, RecordingService.Snapshot expected) {
+        String expectedEntryId = expected == null ? null : expected.entryId;
+        String session = RecordingService.widgetStopToken(expected);
+        Intent intent = new Intent(context, RecordingWidgetControlReceiver.class)
+                .setData(new Uri.Builder().scheme("fieldnote").authority("recording-widget").appendPath("stop")
+                        .appendPath(expectedEntryId == null ? "unavailable" : expectedEntryId)
+                        .appendPath(session == null ? "unavailable" : session).build());
+        try {
+            return intent.setAction(ACTION_WIDGET_STOP).putExtra(EXTRA_NONCE, nonce(context))
+                    .putExtra(EXTRA_WIDGET_ENTRY, expectedEntryId).putExtra(EXTRA_WIDGET_SESSION, session);
+        } catch (RuntimeException unavailable) {
+            Log.w("FieldnoteShortcuts", "Widget authentication is unavailable.");
+            return intent;
+        }
+    }
+
+    public static boolean isRecordingWidgetStopIntent(Context context, Intent intent) {
+        return authenticated(context, intent, ACTION_WIDGET_STOP,
+                new ComponentName(context, RecordingWidgetControlReceiver.class));
     }
 
     private static Intent launchIntent(Context context, String action) {

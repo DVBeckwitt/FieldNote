@@ -1,23 +1,24 @@
-# Fieldnote 0.2.0-beta.22
+# Fieldnote 0.2.0-beta.23
 
-Android beta (version code 23) for Android 8.0 and later.
+Android beta (version code 24) for Android 8.0 and later.
 No Google services are needed; no network permission is requested.
 Root access is neither needed nor used.
 
 ## Install
 
-Download the APK from the [beta 22 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.22).
+Download the APK from the [beta 23 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.23).
 Transfer it to the phone and open it from Files. If prompted, allow that
 installer source to install apps, then complete installation. This personal beta
 uses the local signing certificate; updates over earlier betas must use the same
 certificate. Keep the existing app installed to preserve its permissions,
 settings, and any pending captures.
 
-Beta 22 offers separate home-screen shortcuts for immediate recording in the
-main app and for showing the floating microphone. Drag the floating control's
-small handle to reposition it; its position is remembered. Swipe the microphone
-diagonally down-right to close it and finish the current audio/video, including
-locked audio. The existing main-screen gestures and project ZIP workflow remain.
+Beta 23 makes the **Recorder** widget start and stop audio directly on the home
+screen. It replaces the previous widget action that opened the floating control.
+The separate **Record now** and **Floating mic** shortcuts remain available.
+The microphone is blue while idle and turns purple with a radiating glow during
+recording, in the app, floating control, and audio widget. The widget glow is
+static; the app and floating control animate it when system settings allow.
 The [validation summary](../docs/VALIDATION.md) records the checks and their limits.
 See [Building Fieldnote](BUILDING.md) to build or test from source.
 
@@ -28,7 +29,7 @@ See [Building Fieldnote](BUILDING.md) to build or test from source.
    a new project. Fieldnote creates `<project-name>.zip` there.
 2. On Record, hold the large microphone. Grant microphone access if requested,
    then hold again to record. Press feedback is haptic when system settings allow.
-   Its distinct recording blue shows when audio is active. Release to finalize a
+   Its purple recording glow shows when audio is active. Release to finalize a
    separate AAC `.m4a` file and queue its project save. Audio starts after the
    short 180 ms hold threshold; quicker directional gestures select an action.
 3. Drag upward to lock narration. On release, the microphone returns home with
@@ -69,7 +70,7 @@ capture timestamp. Names and text are stored in the project's metadata index.
 While held, the microphone shrinks to 84% and follows your thumb's displacement
 one-for-one from its fixed layout center. The home, guide, and targets keep that
 same fixed origin; they do not move with the circle. Release returns the circle
-home with a 230 ms easing animation. The blue gradient artwork compacts as your
+home with a 230 ms easing animation. The gradient artwork compacts as your
 drag grows, without changing the view's tracking or activation geometry. Hold
 anywhere in the microphone area to start audio; if you press
 outside home, return there before a directional action can trigger.
@@ -78,21 +79,23 @@ marker target. Targets are farther out: activation is 112 dp from the fixed
 origin, with a 28 dp central home region for rearming repeatable actions.
 The guide uses narrow blue trails, translucent target rings, and a fading halo.
 Haptic steps change on approach and retreat; crossing a target gives an activation
-pulse. Subtle held-state shake and soft blue glow remain. Animation and haptic
-feedback respect system settings. The notes panel still follows your finger and
+pulse. The idle microphone is blue; active audio or video uses a purple glow,
+including locked, hands-free recording. Its glow animates while recording, and
+the held control keeps its subtle shake. Animation and haptic feedback respect
+system settings. The notes panel still follows your finger and
 uses a smooth 180–260 ms settling animation after release.
 
 Standalone video includes embedded audio when microphone permission is available.
 Inline video during narration has no embedded audio: the voice stays in the
 separate linked `.m4a`. Both originals remain in the same entry.
 
-## Home-screen shortcut and floating microphone
+## Home-screen widget, shortcuts, and floating microphone
 
-Create a project in Fieldnote first. Home-screen capture uses the **most recently
-created project**, which may differ from the project you last opened. If audio
-is already recording, it keeps that recording's project and entry instead of
-starting a duplicate. With no project available, Fieldnote asks you to create
-one and does not start recording.
+Create a project and grant microphone access in Fieldnote first. New home-screen
+recordings use the **most recently created project**, which may differ from the
+project you last opened. The Recorder widget stops current audio when tapped
+while recording; the shortcuts reuse its project and entry instead of starting
+a duplicate.
 
 In **Settings**, choose:
 
@@ -101,8 +104,8 @@ In **Settings**, choose:
   **Record now** when your launcher supports app shortcuts.
 - **Add Floating mic shortcut** to request a separate launcher shortcut that
   shows the overlay. You can also find **Floating mic** by long-pressing the app icon.
-- **Add floating mic widget** for the single blue microphone button. Confirm
-  placement in your launcher; if pinning is unavailable, add **Floating mic**
+- **Add recording widget** for the single microphone button. Confirm
+  placement in your launcher; if pinning is unavailable, add **Recorder**
   from the launcher's widget picker.
 - **Show floating mic** to open the floating control directly, without adding
   a home-screen item.
@@ -114,21 +117,38 @@ recording keeps its project and original file. If the floating control is open,
 Record now hides it and keeps that audio locked on the main screen instead of
 starting a duplicate recording. Finish floating video or text entry before this handoff.
 
-First, open Fieldnote, create a project, then use **Settings > Show floating mic**
-to finish setup. Allow **Display over other apps** (sometimes called **Draw over
-other apps**) and grant microphone and camera access when requested. Camera
-access is required on phones with a camera so the media gestures work. Root
-access is not needed.
+Tap the blue **Recorder** widget to start hands-free audio in place, then tap it
+again to stop and save. It stays on Smart Launcher or your other home screen:
+it does not open Fieldnote or a floating circle. The widget needs microphone
+permission, but no camera or **Display over other apps** permission. During audio
+recording it shows a purple circle with a static radiating gradient. Tapping it
+stops the current audio and any linked floating video, even if that recording
+began in the app or floating mic. Finish standalone floating capture or text
+entry before starting a new widget recording. While audio is
+starting, another tap cancels it; while audio is finalizing, the button is
+temporarily unavailable.
 
-After setup, tapping the **Floating mic** widget shows the control directly over
-Smart Launcher or your other home launcher, without opening Fieldnote or starting
-a recording. Hold and swipe on that microphone to capture. Android widgets have
-[gesture limitations](https://developer.android.com/develop/ui/views/appwidgets/overview#gestures)
-that prevent hosting the complete drag control, so the widget activates the interactive overlay.
-If setup is missing, the widget stays on the home screen and explains what is
-needed; tap its setup notification or open Fieldnote to finish setup. An update
-refreshes existing widgets. If your launcher keeps an old widget action cached, remove
-and re-add **Floating mic** from its widget picker.
+If microphone permission or a project is missing, recording does not start and
+the widget keeps you on the home screen. It explains the needed setup and offers
+a **Set up the recording widget** notification when notifications are allowed.
+Tap that notification or open Fieldnote yourself to complete setup. Updates
+refresh existing widgets to the new Recorder action. If your launcher keeps the
+old action or artwork cached, remove the widget and add **Recorder** again.
+
+The widget supports tap recording; full media swipes remain in the app and
+floating control. Android's current standard widgets use
+[RemoteViews layouts without custom views](https://developer.android.com/develop/ui/views/appwidgets#CreateLayout)
+and have [limited gesture support](https://developer.android.com/develop/ui/views/appwidgets/overview#gestures).
+Smart Launcher's documented
+[third-party widget API](https://docs.smartlauncher.net/work-with-smart-launcher/third-party-widget-devs-apis)
+covers configuration backup and restore, not embedding the custom hold-and-drag
+microphone. These published APIs do not provide that full interaction in place;
+root access alone does not extend their input contract.
+
+For the floating control, use **Settings > Show floating mic** to finish setup.
+Allow **Display over other apps** (sometimes called **Draw over other apps**)
+and grant microphone and camera access when requested. Camera access is required
+on phones with a camera so the media gestures work. Root access is not needed.
 
 The floating mic uses the same touch actions: hold to record, release to save,
 up to lock, left for a linked photo, right for video, down for text, and diagonally
@@ -151,6 +171,8 @@ The close target appears with the other gesture guides and uses the same approac
 retreat, and activation haptics. Return to center before changing from a video
 swipe to another action, including close. This close gesture belongs only to the
 floating control; the main microphone keeps its existing gestures.
+If the floating control belongs to another project, down-right still closes it
+without stopping that project's audio. Other capture gestures stay unavailable.
 
 The **Fieldnote floating microphone** notification remains available too.
 **Hide** preserves explicitly locked narration, which has its own recording

@@ -388,7 +388,7 @@ public class MainActivity extends Activity {
         ink = Color.parseColor(dark ? "#E8F1FF" : "#17314D");
         muted = Color.parseColor(dark ? "#ABC0DB" : "#536C87");
         accent = Color.parseColor(dark ? "#91C5FF" : "#2C68B2");
-        recordingColor = Color.parseColor(dark ? "#3E75FF" : "#1648C8");
+        recordingColor = Color.parseColor(dark ? "#C69CFF" : "#7C3AED");
         buttonInk = Color.parseColor(dark ? "#0C2340" : "#FFFFFF");
         border = Color.parseColor(dark ? "#2A405C" : "#CEDDF1");
         getWindow().setStatusBarColor(background);
@@ -1076,6 +1076,7 @@ public class MainActivity extends Activity {
         boolean starting = snapshot.state == RecordingService.State.STARTING;
         boolean saving = snapshot.state == RecordingService.State.SAVING;
         boolean paused = snapshot.state == RecordingService.State.PAUSED;
+        boolean videoRecording = inlineCamera != null && inlineCamera.isRecording();
         markerButton.setEnabled(recording);
         markerButton.setAlpha(recording ? 1f : .45f);
         markerButton.setText(recording && snapshot.markerCount > 0
@@ -1092,8 +1093,8 @@ public class MainActivity extends Activity {
         }
         if (snapshot.markerError != null && !snapshot.markerError.equals(observedMarkerError)) toast(snapshot.markerError);
         observedMarkerError = snapshot.markerError;
-        recordButton.recording = recording || starting || paused;
-        recordButton.locked = snapshot.locked;
+        recordButton.recording = recording || starting || paused || videoRecording;
+        recordButton.locked = (recording || starting || paused) && snapshot.locked;
         recordButton.invalidate();
         if (recording) {
             boolean writing = captureKey(snapshot).equals(textRecordingKey);
@@ -1119,6 +1120,11 @@ public class MainActivity extends Activity {
             recordStatus.setText("Saving…");
             recordTitle.setText("Finishing audio");
             recordHelp.setText("");
+        } else if (videoRecording) {
+            recordStatus.setText("Recording video");
+            recordTitle.setText("Video recording");
+            recordHelp.setText("Use Stop video in the camera preview to finish");
+            recordButton.setContentDescription("Video recording. Use Stop video in the camera preview to finish.");
         } else {
             recordStatus.setText(snapshot.state == RecordingService.State.ERROR ? "Capture needs attention"
                     : publication.error != null && !publication.error.isEmpty() ? "ZIP needs attention · tap to retry"
@@ -2025,12 +2031,12 @@ public class MainActivity extends Activity {
             boolean accepted = RecordingShortcuts.requestPinFloating(this);
             main.post(() -> { if (!destroyed) toast(accepted ? "Confirm the shortcut in your launcher." : "Long-press the Fieldnote app icon to find Floating mic."); });
         })).setId(R.id.add_floating_shortcut);
-        addAction(content, "Add floating mic widget", () -> localIo.execute(() -> {
+        addAction(content, "Add recording widget", () -> localIo.execute(() -> {
             boolean accepted = RecordingWidget.requestPin(this);
-            main.post(() -> { if (!destroyed) toast(accepted ? "Confirm the widget in your launcher." : "Add Floating mic from your launcher’s widget picker."); });
+            main.post(() -> { if (!destroyed) toast(accepted ? "Confirm the widget in your launcher." : "Add Recorder from your launcher’s widget picker."); });
         }));
         addAction(content, "Show floating mic", () -> acceptQuickIntent(RecordingShortcuts.overlayIntent(this)));
-        content.addView(text("Record now opens this screen and starts audio immediately. Floating mic shows the control over other apps. Both use your last-created project; the floating mic needs Display over other apps permission.", 12, muted));
+        content.addView(text("Recorder widget: tap to start or stop audio on your home screen. Record now opens this screen and starts audio. Floating mic keeps the full swipe controls over other apps. New recordings use your last-created project; only the floating mic needs Display over other apps permission.", 12, muted));
         TextView version = text(getString(R.string.app_version_label), 12, muted);
         version.setPadding(0, dp(20), 0, dp(12));
         content.addView(version);

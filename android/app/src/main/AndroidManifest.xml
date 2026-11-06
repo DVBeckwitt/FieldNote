@@ -25,11 +25,12 @@
             </intent-filter>
         </activity>
         <activity android:name=".CameraActivity" android:exported="false" android:screenOrientation="portrait" />
-        <service android:name=".RecordingService" android:exported="false" android:foregroundServiceType="microphone" android:stopWithTask="false" />
+        <service android:name=".RecordingService" android:exported="false" android:foregroundServiceType="microphone|shortService" android:stopWithTask="false" />
+        <receiver android:name=".RecordingWidgetControlReceiver" android:exported="false" />
         <service android:name=".FloatingRecorderService" android:exported="false" android:foregroundServiceType="specialUse|camera|microphone" android:stopWithTask="false">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-enabled floating multimedia recorder controls" />
         </service>
-        <receiver android:name=".RecordingWidget" android:exported="false" android:label="Floating mic" android:icon="@drawable/ic_shortcut_record">
+        <receiver android:name=".RecordingWidget" android:exported="false" android:label="Recorder" android:icon="@drawable/ic_shortcut_record">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
