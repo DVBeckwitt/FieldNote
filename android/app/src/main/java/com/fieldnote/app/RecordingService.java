@@ -42,7 +42,6 @@ public final class RecordingService extends Service {
     private static final String ACTION_START = "com.fieldnote.app.START_RECORDING";
     private static final String ACTION_STOP = "com.fieldnote.app.STOP_RECORDING";
     private static final String ACTION_LOCK = "com.fieldnote.app.LOCK_RECORDING";
-    private static final String ACTION_PAUSE_FOR_TEXT = "com.fieldnote.app.PAUSE_RECORDING_FOR_TEXT";
     private static final String CHANNEL = "fieldnote_recording";
     private static final int NOTIFICATION_ID = 1001;
     static final int WIDGET_SETUP_NOTIFICATION_ID = 1004;
@@ -50,7 +49,7 @@ public final class RecordingService extends Service {
     private static final int MAX_DURATION_MS = 6 * 60 * 60 * 1000;
     private static final Object STATE_LOCK = new Object();
 
-    public enum State { IDLE, STARTING, RECORDING, PAUSED, SAVING, ERROR }
+    public enum State { IDLE, STARTING, RECORDING, SAVING, ERROR }
 
     public static final class Snapshot {
         public final State state;
@@ -58,9 +57,6 @@ public final class RecordingService extends Service {
         public final String entryId;
         public final long startedAt;
         public final long startedElapsedRealtime;
-        public final boolean paused;
-        /** Capture time at the pause boundary; typing and finalization are excluded. */
-        public final long pausedAt;
         public final boolean locked;
         /** Null unless a failure or an interruption needs explaining to the user. */
         public final String error;
@@ -71,17 +67,16 @@ public final class RecordingService extends Service {
         /** A marker failure is separate from the health of the ongoing recording. */
         public final String markerError;
         private final String token;
-        private final long pausedElapsedRealtime;
 
         private Snapshot(State state, Uri projectUri, String entryId, long startedAt,
-                         long startedElapsedRealtime, long pausedElapsedRealtime,
+                         long startedElapsedRealtime,
                          boolean locked, String error, String token) {
-            this(state, projectUri, entryId, startedAt, startedElapsedRealtime, pausedElapsedRealtime,
+            this(state, projectUri, entryId, startedAt, startedElapsedRealtime,
                     locked, error, token, 0, -1, null);
         }
 
         private Snapshot(State state, Uri projectUri, String entryId, long startedAt,
-                         long startedElapsedRealtime, long pausedElapsedRealtime,
+                         long startedElapsedRealtime,
                          boolean locked, String error, String token, int markerCount,
                          long lastMarkerOffsetMs, String markerError) {
             this.state = state;
@@ -89,9 +84,6 @@ public final class RecordingService extends Service {
             this.entryId = entryId;
             this.startedAt = startedAt;
             this.startedElapsedRealtime = startedElapsedRealtime;
-            this.pausedElapsedRealtime = pausedElapsedRealtime;
-            this.paused = pausedElapsedRealtime > 0;
-            this.pausedAt = paused ? startedAt + Math.max(0, pausedElapsedRealtime - startedElapsedRealtime) : 0;
             this.locked = locked;
             this.error = error;
             this.token = token;
@@ -101,18 +93,15 @@ public final class RecordingService extends Service {
         }
 
         public long elapsedMs() {
-            if (paused && startedElapsedRealtime > 0)
-                return Math.max(0, pausedElapsedRealtime - startedElapsedRealtime);
             return state == State.RECORDING && startedElapsedRealtime > 0
                     ? Math.max(0, SystemClock.elapsedRealtime() - startedElapsedRealtime) : 0;
         }
     }
 
     private static volatile Snapshot current = new Snapshot(State.IDLE, null, null,
-            0, 0, 0, false, null, null);
+            0, 0, false, null, null);
     private static volatile boolean stopRequested;
     private static volatile boolean lockRequested;
-    private static volatile boolean pauseRequested;
     private static volatile RecordingService activeInstance;
     private HandlerThread recorderThread;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -128,9 +117,6 @@ public final class RecordingService extends Service {
     private JSONObject startMetadata;
     private long startedAt;
     private long startedElapsed;
-    private long pausedElapsed;
-    private long pausedWall;
-    private JSONObject pausedMetadata;
     private boolean recorderStarted;
     private boolean widgetStarted;
     private volatile boolean foregroundStarted;
@@ -160,8 +146,8 @@ public final class RecordingService extends Service {
 
     /** Internal capability identity: entry IDs can contain several successive audio originals. */
     static String widgetStopToken(Snapshot expected) {
-        return expected != null && (expected.state == State.STARTING || expected.state == State.RECORDING
-                || expected.state == State.PAUSED) ? expected.token : null;
+        return expected != null && (expected.state == State.STARTING || expected.state == State.RECORDING)
+                ? expected.token : null;
     }
 
     public static boolean isRecording() {
@@ -170,10 +156,8 @@ public final class RecordingService extends Service {
     }
 
     public static boolean isBusy() {
-        return isRecording() || isPaused() || current.state == State.SAVING;
+        return isRecording() || current.state == State.SAVING;
     }
-
-    public static boolean isPaused() { return current.state == State.PAUSED; }
 
     /** Call from a visible Activity after RECORD_AUDIO has been granted. */
     public static void start(Context context, Uri projectUri, String targetEntryId) {
@@ -184,10 +168,9 @@ public final class RecordingService extends Service {
             requestToken = UUID.randomUUID().toString();
             stopRequested = false;
             lockRequested = false;
-            pauseRequested = false;
             String id = targetEntryId == null || targetEntryId.isEmpty()
                     ? UUID.randomUUID().toString() : targetEntryId;
-            current = new Snapshot(State.STARTING, projectUri, id, 0, 0, 0, false, null, requestToken);
+            current = new Snapshot(State.STARTING, projectUri, id, 0, 0, false, null, requestToken);
         }
         if (projectUri == null) {
             externalFailure(app, requestToken, "Choose a project folder before recording.");
@@ -199,8 +182,7 @@ public final class RecordingService extends Service {
         }
         broadcast(app);
         Intent intent = new Intent(app, RecordingService.class).setAction(ACTION_START)
-                .putExtra("projectUri", projectUri.toString())
-                .putExtra("entryId", current.entryId).putExtra("token", requestToken);
+                .putExtra("token", requestToken);
         try {
             app.startForegroundService(intent);
         } catch (RuntimeException error) {
@@ -214,7 +196,7 @@ public final class RecordingService extends Service {
         Snapshot before;
         synchronized (STATE_LOCK) {
             before = current;
-            if (before.state != State.STARTING && before.state != State.RECORDING && before.state != State.PAUSED) return;
+            if (before.state != State.STARTING && before.state != State.RECORDING) return;
             // This flag is checked even if STOP is delivered while prepare() is still running.
             stopRequested = true;
         }
@@ -222,7 +204,7 @@ public final class RecordingService extends Service {
             context.getApplicationContext().startService(new Intent(context, RecordingService.class)
                     .setAction(ACTION_STOP).putExtra("token", before.token));
         } catch (RuntimeException ignored) {
-            postToActiveWorker(before.token, false);
+            finishOnActiveWorker(before.token);
             // Before service creation, beginRecording observes stopRequested itself.
         }
     }
@@ -239,7 +221,7 @@ public final class RecordingService extends Service {
         synchronized (STATE_LOCK) {
             Snapshot before = current;
             service = activeInstance;
-            if (before.state != State.RECORDING || stopRequested || pauseRequested
+            if (before.state != State.RECORDING || stopRequested
                     || before.startedElapsedRealtime <= 0 || service == null || service.destroyed
                     || service.worker == null || before.token == null || !before.token.equals(service.token)) return false;
             request = new MarkerRequest(before.token,
@@ -254,32 +236,13 @@ public final class RecordingService extends Service {
         return queued;
     }
 
-    /** Pause this original while its linked text is edited; stop() later finalizes the same file. */
-    public static void pauseForText(Context context) {
-        Snapshot before;
-        synchronized (STATE_LOCK) {
-            before = current;
-            if (before.state != State.STARTING && before.state != State.RECORDING) return;
-            if (stopRequested) return;
-            pauseRequested = true;
-            lockRequested = true;
-        }
-        try {
-            context.getApplicationContext().startService(new Intent(context, RecordingService.class)
-                    .setAction(ACTION_PAUSE_FOR_TEXT).putExtra("token", before.token));
-        } catch (RuntimeException error) {
-            if (!postToActiveWorker(before.token, true)) stop(context);
-        }
-    }
-
-    private static boolean postToActiveWorker(String requestToken, boolean pause) {
+    private static void finishOnActiveWorker(String requestToken) {
         RecordingService service = activeInstance;
         if (service == null || service.destroyed || !requestToken.equals(service.token) || service.worker == null)
-            return false;
-        return service.worker.post(() -> {
+            return;
+        service.worker.post(() -> {
             if (!requestToken.equals(current.token) || !requestToken.equals(service.token)) return;
-            if (pause) service.pauseRecordingForText();
-            else service.finishRecording("complete", null);
+            service.finishRecording("complete", null);
         });
     }
 
@@ -290,7 +253,7 @@ public final class RecordingService extends Service {
             if (before.state != State.STARTING && before.state != State.RECORDING) return;
             lockRequested = true;
             current = new Snapshot(before.state, before.projectUri, before.entryId, before.startedAt,
-                    before.startedElapsedRealtime, before.pausedElapsedRealtime, true, before.error, before.token,
+                    before.startedElapsedRealtime, true, before.error, before.token,
                     before.markerCount, before.lastMarkerOffsetMs, before.markerError);
         }
         broadcast(context);
@@ -307,7 +270,7 @@ public final class RecordingService extends Service {
             Snapshot before = current;
             if (!requestToken.equals(before.token)) return;
             current = new Snapshot(State.ERROR, before.projectUri, before.entryId, before.startedAt,
-                    before.startedElapsedRealtime, before.pausedElapsedRealtime, before.locked, message, before.token,
+                    before.startedElapsedRealtime, before.locked, message, before.token,
                     before.markerCount, before.lastMarkerOffsetMs, before.markerError);
         }
         broadcast(context);
@@ -343,7 +306,7 @@ public final class RecordingService extends Service {
         if (widgetRequest && !startWidgetAdmission()) return START_NOT_STICKY;
         if (intent == null || finishing || destroyed) { finishService(); return START_NOT_STICKY; }
         if (RecordingShortcuts.isRecordingWidgetIntent(this, intent)) {
-            toggleFromWidget(startId);
+            toggleFromWidget();
             return START_NOT_STICKY;
         }
         String action = intent.getAction();
@@ -369,13 +332,6 @@ public final class RecordingService extends Service {
         } else if (ACTION_LOCK.equals(action)) {
             lockRequested = true;
             updateNotification();
-        } else if (ACTION_PAUSE_FOR_TEXT.equals(action)) {
-            synchronized (STATE_LOCK) {
-                if (!requestedToken.equals(current.token)) return START_NOT_STICKY;
-                pauseRequested = true;
-                lockRequested = true;
-            }
-            worker.post(this::pauseRecordingForText);
         }
         return START_NOT_STICKY;
     }
@@ -388,7 +344,7 @@ public final class RecordingService extends Service {
         synchronized (STATE_LOCK) {
             boolean matches = expectedEntry != null && expectedEntry.equals(current.entryId)
                     && expectedSession != null && expectedSession.equals(current.token)
-                    && (isRecording() || isPaused());
+                    && isRecording();
             // Keep admission and stop's token snapshot atomic with respect to a new original.
             if (matches) stop(context);
         }
@@ -396,7 +352,7 @@ public final class RecordingService extends Service {
     }
 
     /** A launcher widget click grants microphone foreground admission without an Activity. */
-    private void toggleFromWidget(int startId) {
+    private void toggleFromWidget() {
         if (token == null && isBusy() && (stopRequested || current.state == State.SAVING)) {
             // A new widget service can arrive while the previous instance's worker
             // finishes teardown. It owns no recorder and must not inherit that token.
@@ -404,13 +360,13 @@ public final class RecordingService extends Service {
             return;
         }
         if (!isBusy() && FloatingRecorderService.isBusyForHandoff()) {
-            widgetSetupRequired("Finish the floating capture first, then tap the recording widget again.", startId);
+            widgetSetupRequired("Finish the floating capture first, then tap the recording widget again.");
             return;
         }
         boolean stopExisting = false;
         boolean admitQueuedStart = false;
         synchronized (STATE_LOCK) {
-            if (isRecording() || isPaused()) {
+            if (isRecording()) {
                 // Repeated taps during provider lookup or prepare() cancel the same request.
                 // Never replace its token, project, or original with a second recording.
                 stopRequested = true;
@@ -429,9 +385,8 @@ public final class RecordingService extends Service {
                 entryId = UUID.randomUUID().toString();
                 stopRequested = false;
                 lockRequested = true;
-                pauseRequested = false;
                 widgetStarted = true;
-                current = new Snapshot(State.STARTING, null, entryId, 0, 0, 0, true, null, token);
+                current = new Snapshot(State.STARTING, null, entryId, 0, 0, true, null, token);
             }
         }
         if (stopExisting) {
@@ -531,10 +486,6 @@ public final class RecordingService extends Service {
 
     /** Setup is explicit: a failed widget tap never launches an Activity or an overlay. */
     private void widgetSetupRequired(String explanation) {
-        widgetSetupRequired(explanation, 0);
-    }
-
-    private void widgetSetupRequired(String explanation, int startId) {
         terminalState = State.ERROR;
         terminalMessage = explanation;
         main.post(() -> {
@@ -566,7 +517,7 @@ public final class RecordingService extends Service {
         try {
             if (stopRequested) {
                 if (widgetStarted) cancelBeforeRecording();
-                else fail("The press was too short to start recording. Hold the microphone a little longer.", null);
+                else fail("The press was too short to start recording. Hold the microphone a little longer.");
                 return;
             }
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -591,7 +542,7 @@ public final class RecordingService extends Service {
             }
             if (stopRequested) {
                 if (widgetStarted) cancelBeforeRecording();
-                else fail("The press was too short to start recording. Hold the microphone a little longer.", null);
+                else fail("The press was too short to start recording. Hold the microphone a little longer.");
                 return;
             }
             registerSilenceDetection();
@@ -609,40 +560,13 @@ public final class RecordingService extends Service {
                 finishRecording("interrupted", "Android did not make the microphone available to Fieldnote.");
             } else if (stopRequested) {
                 finishRecording("complete", null);
-            } else if (pauseRequested) {
-                pauseRecordingForText();
             }
         } catch (Exception error) {
             if (recorderStarted) {
                 finishRecording("interrupted", "Recording was interrupted: " + safeMessage(error));
             } else {
-                fail("Could not start audio recording. " + safeMessage(error), error);
+                fail("Could not start audio recording. " + safeMessage(error));
             }
-        }
-    }
-
-    private void pauseRecordingForText() {
-        if (!recorderStarted) return;
-        if (stopRequested) { finishRecording("complete", null); return; }
-        if (pausedElapsed > 0) return;
-        long boundaryElapsed = SystemClock.elapsedRealtime();
-        long boundaryWall = System.currentTimeMillis();
-        try {
-            recorder.pause(); // API 24; the app's minimum API is 26.
-            pausedElapsed = boundaryElapsed;
-            pausedWall = boundaryWall;
-            pausedMetadata = MetadataCollector.snapshot(this);
-            put(startMetadata, "pauseReason", "linked_text_entry");
-            put(startMetadata, "observedWallClockAtPause", Instant.ofEpochMilli(pausedWall).toString());
-            lockRequested = true;
-            update(State.PAUSED, null);
-            updateNotification();
-            releaseWakeLock();
-            MetadataCollector.stop(this);
-            if (stopRequested) finishRecording("complete", null);
-        } catch (RuntimeException error) {
-            finishRecording("interrupted", "Audio could not pause for text; the available recording was saved. "
-                    + safeMessage(error));
         }
     }
 
@@ -675,7 +599,7 @@ public final class RecordingService extends Service {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || recorder == null) return;
         silenceCallback = new AudioManager.AudioRecordingCallback() {
             @Override public void onRecordingConfigChanged(List<AudioRecordingConfiguration> configs) {
-                if (pausedElapsed > 0 || !recorderStarted) return;
+                if (!recorderStarted) return;
                 for (AudioRecordingConfiguration config : configs) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && config.isClientSilenced()) {
                         finishRecording("interrupted", "Android interrupted microphone access. The available audio was kept.");
@@ -718,10 +642,8 @@ public final class RecordingService extends Service {
         updateNotification();
         acquireWakeLock(10 * 60 * 1000L);
         long finalizationElapsed = SystemClock.elapsedRealtime();
-        long captureEndedElapsed = pausedElapsed > 0 ? pausedElapsed : finalizationElapsed;
-        long elapsed = Math.max(0, captureEndedElapsed - startedElapsed);
+        long elapsed = Math.max(0, finalizationElapsed - startedElapsed);
         long observedStopWall = System.currentTimeMillis();
-        long observedCaptureEndWall = pausedElapsed > 0 ? pausedWall : observedStopWall;
         // Keep elapsed duration truthful if the user changes the wall clock while recording.
         long endedAt = startedAt + elapsed;
         boolean stoppedCleanly = true;
@@ -740,21 +662,15 @@ public final class RecordingService extends Service {
         try {
             long encodedDuration = validateAudio(pendingFile);
             JSONObject metadata = startMetadata == null ? new JSONObject() : startMetadata;
-            put(metadata, "endSnapshot", pausedMetadata != null ? pausedMetadata : MetadataCollector.snapshot(this));
+            put(metadata, "endSnapshot", MetadataCollector.snapshot(this));
             put(metadata, "finalizationSnapshot", MetadataCollector.snapshot(this));
             put(metadata, "finalizedAt", Instant.now().toString());
             put(metadata, "monotonicDurationMs", elapsed);
             put(metadata, "encodedDurationMs", encodedDuration);
             put(metadata, "observedWallClockAtStop", Instant.ofEpochMilli(observedStopWall).toString());
             put(metadata, "finalizationStartedAt", Instant.ofEpochMilli(observedStopWall).toString());
-            put(metadata, "endedAtSource", pausedElapsed > 0
-                    ? "start wall-clock plus monotonic elapsed time at MediaRecorder.pause invocation"
-                    : "start wall-clock plus monotonic elapsed time at MediaRecorder.stop invocation");
-            put(metadata, "wallClockDriftMs", observedCaptureEndWall - endedAt);
-            if (pausedElapsed > 0) {
-                put(metadata, "capturePausedAt", Instant.ofEpochMilli(endedAt).toString());
-                put(metadata, "pausedBeforeFinalizationMs", Math.max(0, finalizationElapsed - pausedElapsed));
-            }
+            put(metadata, "endedAtSource", "start wall-clock plus monotonic elapsed time at MediaRecorder.stop invocation");
+            put(metadata, "wallClockDriftMs", observedStopWall - endedAt);
             put(metadata, "capturePhase", "finalized");
             if (!stoppedCleanly) {
                 if (!"limit_reached".equals(status)) status = "interrupted";
@@ -808,7 +724,7 @@ public final class RecordingService extends Service {
         }
     }
 
-    private void fail(String message, Throwable cause) {
+    private void fail(String message) {
         releaseRecorder();
         releaseWakeLock();
         abandon(message);
@@ -857,7 +773,7 @@ public final class RecordingService extends Service {
             if (token == null || !token.equals(current.token)) return;
             Snapshot before = current;
             current = new Snapshot(state, project, entryId, startedAt, startedElapsed,
-                    pausedElapsed, lockRequested, error, token,
+                    lockRequested, error, token,
                     before.markerCount, before.lastMarkerOffsetMs, before.markerError);
         }
         broadcast(this);
@@ -897,7 +813,7 @@ public final class RecordingService extends Service {
             Snapshot before = current;
             if (!request.token.equals(token) || !request.token.equals(before.token)) return;
             current = new Snapshot(before.state, before.projectUri, before.entryId, before.startedAt,
-                    before.startedElapsedRealtime, before.pausedElapsedRealtime, before.locked, before.error, before.token,
+                    before.startedElapsedRealtime, before.locked, before.error, before.token,
                     saved ? before.markerCount + 1 : before.markerCount,
                     saved ? Math.max(before.lastMarkerOffsetMs, request.offsetMs) : before.lastMarkerOffsetMs,
                     saved && !failedMarkers.isEmpty() ? before.markerError : failure);
@@ -909,7 +825,6 @@ public final class RecordingService extends Service {
         Snapshot state = current;
         String text = state.state == State.SAVING ? "Saving the original audio and its timestamps…"
                 : state.state == State.STARTING ? "Starting microphone…"
-                : state.state == State.PAUSED ? "Audio paused while you write. Finish the note or tap Stop to save."
                 : state.locked ? "Recording is locked. Tap Stop to save." : "Release the button to save. Slide up to lock.";
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) manager.notify(NOTIFICATION_ID, notification(text));
@@ -922,8 +837,7 @@ public final class RecordingService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Notification.Builder builder = new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-                .setContentTitle(current.state == State.SAVING ? "Saving Fieldnote audio"
-                        : current.state == State.PAUSED ? "Fieldnote audio paused" : "Fieldnote audio recording")
+                .setContentTitle(current.state == State.SAVING ? "Saving Fieldnote audio" : "Fieldnote audio recording")
                 .setContentText(text).setOngoing(true).setOnlyAlertOnce(true)
                 .setCategory(Notification.CATEGORY_SERVICE)
                 .setVisibility(Notification.VISIBILITY_PRIVATE)

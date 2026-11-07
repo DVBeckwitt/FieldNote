@@ -24,7 +24,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity android:name=".CameraActivity" android:exported="false" android:screenOrientation="portrait" />
         <service android:name=".RecordingService" android:exported="false" android:foregroundServiceType="microphone|shortService" android:stopWithTask="false" />
         <receiver android:name=".RecordingWidgetControlReceiver" android:exported="false" />
         <service android:name=".FloatingRecorderService" android:exported="false" android:foregroundServiceType="specialUse|camera|microphone" android:stopWithTask="false">

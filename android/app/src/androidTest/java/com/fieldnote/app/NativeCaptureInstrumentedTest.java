@@ -128,7 +128,7 @@ public final class NativeCaptureInstrumentedTest {
         // Stop only this test's recording, while its visible test activity still exists.
         RecordingService.Snapshot owned = RecordingService.snapshot();
         if (projectUri != null && projectUri.equals(owned.projectUri) && RecordingService.isBusy()) {
-            if (RecordingService.isRecording() || RecordingService.isPaused())
+            if (RecordingService.isRecording())
                 instrumentation.runOnMainSync(() -> RecordingService.stop(context));
             await("owned recording finishes during cleanup", 15_000, () -> !RecordingService.isBusy());
         }
@@ -1200,7 +1200,6 @@ public final class NativeCaptureInstrumentedTest {
         assertEquals(RecordingService.State.RECORDING, writing.state);
         assertEquals(started.startedAt, writing.startedAt);
         assertEquals(ownedEntryId, writing.entryId);
-        assertFalse(writing.paused);
         String text = "Video transition note\nThe next observation is linked while narration continues.";
         onNoteDialog(dialog -> ((EditText) dialog.findViewById(R.id.note_text_input)).setText(text));
         long elapsedAtEditor = writing.elapsedMs();
@@ -1335,7 +1334,6 @@ public final class NativeCaptureInstrumentedTest {
         awaitNoteDialog();
         RecordingService.Snapshot editing = RecordingService.snapshot();
         assertEquals("Downward release keeps narration recording while the editor is open", RecordingService.State.RECORDING, editing.state);
-        assertFalse("Text entry must not pause the original", editing.paused);
         assertTrue(RecordingService.isRecording());
         assertEquals(started.startedAt, editing.startedAt);
         assertEquals(ownedEntryId, editing.entryId);
@@ -1348,7 +1346,6 @@ public final class NativeCaptureInstrumentedTest {
         do {
             RecordingService.Snapshot typing = RecordingService.snapshot();
             assertEquals(RecordingService.State.RECORDING, typing.state);
-            assertFalse(typing.paused);
             long elapsed = typing.elapsedMs();
             assertTrue("The original audio timer keeps advancing during text entry", elapsed >= lastElapsed);
             lastElapsed = elapsed;
@@ -1422,7 +1419,6 @@ public final class NativeCaptureInstrumentedTest {
         awaitNoteDialog();
         RecordingService.Snapshot editing = RecordingService.snapshot();
         assertEquals(RecordingService.State.RECORDING, editing.state);
-        assertFalse(editing.paused);
         long elapsedAtEditor = editing.elapsedMs();
         await("narration continues while the user considers the text note", 5_000,
                 () -> recordingState(RecordingService.State.RECORDING)
@@ -2936,6 +2932,7 @@ public final class NativeCaptureInstrumentedTest {
             assertNull("Detailed metadata is not mixed into the initial media view",
                     viewer.findViewById(EntryViewer.METADATA_CONTENT_ID));
             assertNull("Metadata opens only after its separate action", readField(viewer, "metadataDialog"));
+            assertPlaybackTick(viewer, false);
             assertTrue(viewer.findViewById(EntryViewer.AUDIO_PLAY_ID).performClick());
         });
         await("inline audio actually plays and advances through encoded samples", 15_000, () -> {
@@ -2950,7 +2947,9 @@ public final class NativeCaptureInstrumentedTest {
         });
         AtomicInteger pausedPosition = new AtomicInteger();
         onEntryViewer(viewer -> {
+            assertPlaybackTick(viewer, true);
             assertTrue(viewer.findViewById(EntryViewer.AUDIO_PLAY_ID).performClick());
+            assertPlaybackTick(viewer, false);
             assertEquals("Play audio", viewer.findViewById(EntryViewer.AUDIO_PLAY_ID).getContentDescription().toString());
             SeekBar seek = viewer.findViewById(EntryViewer.AUDIO_SEEK_ID);
             pausedPosition.set(seek.getProgress());
@@ -2984,6 +2983,7 @@ public final class NativeCaptureInstrumentedTest {
             } catch (org.json.JSONException error) { throw new AssertionError("Metadata must preserve the original capture record", error); }
             metadata.dismiss();
             assertTrue(viewer.findViewById(EntryViewer.CLOSE_ID).performClick());
+            assertPlaybackTick(viewer, false);
         });
         awaitNotebookResumed();
     }
@@ -2998,7 +2998,10 @@ public final class NativeCaptureInstrumentedTest {
             });
             return ready.get();
         });
-        onEntryViewer(viewer -> assertTrue(viewer.findViewById(EntryViewer.VIDEO_PLAY_ID).performClick()));
+        onEntryViewer(viewer -> {
+            assertPlaybackTick(viewer, false);
+            assertTrue(viewer.findViewById(EntryViewer.VIDEO_PLAY_ID).performClick());
+        });
         await("embedded VideoView plays real frames with an advancing position", 15_000, () -> {
             AtomicBoolean playing = new AtomicBoolean();
             onEntryViewer(viewer -> {
@@ -3012,7 +3015,9 @@ public final class NativeCaptureInstrumentedTest {
         onEntryViewer(viewer -> {
             View play = viewer.findViewById(EntryViewer.VIDEO_PLAY_ID);
             assertEquals("Pause video", play.getContentDescription().toString());
+            assertPlaybackTick(viewer, true);
             assertTrue(play.performClick());
+            assertPlaybackTick(viewer, false);
             assertFalse("Pause stops native video playback", ((VideoView) viewer.findViewById(EntryViewer.VIDEO_VIEW_ID)).isPlaying());
             assertEquals("Play video", play.getContentDescription().toString());
             SeekBar seek = viewer.findViewById(EntryViewer.VIDEO_SEEK_ID);
@@ -3032,8 +3037,17 @@ public final class NativeCaptureInstrumentedTest {
             assertTrue("The actual VideoView restarted at the requested position, not its old pause position",
                     ((VideoView) viewer.findViewById(EntryViewer.VIDEO_VIEW_ID)).getCurrentPosition() < 600);
             assertTrue(viewer.findViewById(EntryViewer.CLOSE_ID).performClick());
+            assertPlaybackTick(viewer, false);
         });
         awaitNotebookResumed();
+    }
+
+    private static void assertPlaybackTick(EntryViewer viewer, boolean expected) {
+        if (Build.VERSION.SDK_INT >= 29) {
+            Handler handler = (Handler) readField(viewer, "main");
+            Runnable tick = (Runnable) readField(viewer, "tick");
+            assertEquals("Progress callbacks run only while playback is active", expected, handler.hasCallbacks(tick));
+        }
     }
 
     /** Observe lifecycle directly; ActivityScenario.getState waits for global UI idle. */
@@ -3262,7 +3276,6 @@ public final class NativeCaptureInstrumentedTest {
         assertEquals("Camera actions cannot restart the narration file", started.startedAt, current.startedAt);
         assertEquals(started.startedElapsedRealtime, current.startedElapsedRealtime);
         assertFalse("Camera actions do not implicitly lock held narration", current.locked);
-        assertFalse("Camera-zone transitions do not pause narration", current.paused);
     }
 
     private JSONObject findMedia(JSONObject index, String kind) throws Exception {

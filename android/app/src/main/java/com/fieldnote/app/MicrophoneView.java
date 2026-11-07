@@ -40,7 +40,7 @@ public class MicrophoneView extends View {
     public boolean recording, locked;
     private long pressStartedAt;
 
-    public MicrophoneView(Context context, boolean dark, int panel, int accent,
+    public MicrophoneView(Context context, boolean dark, int accent,
                           int recordingColor, ActionListener actions) {
         super(context);
         this.dark = dark;

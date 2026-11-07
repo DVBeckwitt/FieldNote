@@ -1,5 +1,22 @@
 plugins { id 'com.android.application' }
 
+// Signing is an explicit release operation. Never silently publish with a newly
+// generated debug identity; installed Fieldnote releases must remain upgradeable.
+def releaseSigning = [
+    storeFile: System.getenv('FIELDNOTE_KEYSTORE_PATH'),
+    storePassword: System.getenv('FIELDNOTE_KEYSTORE_PASSWORD'),
+    keyAlias: System.getenv('FIELDNOTE_KEY_ALIAS'),
+    keyPassword: System.getenv('FIELDNOTE_KEY_PASSWORD')
+]
+def signingFieldsPresent = releaseSigning.values().count { it != null && !it.isEmpty() }
+if (signingFieldsPresent != 0 && signingFieldsPresent != releaseSigning.size()) {
+    throw new GradleException('Set all four FIELDNOTE signing environment variables, or none.')
+}
+def useExistingBetaKey = providers.gradleProperty('fieldnoteUseExistingBetaKey').orNull == 'true'
+if (useExistingBetaKey && signingFieldsPresent != 0) {
+    throw new GradleException('Choose configured release signing or the existing beta key, not both.')
+}
+
 android {
     namespace 'com.fieldnote.app'
     compileSdk 35
@@ -7,8 +24,8 @@ android {
         applicationId 'com.fieldnote.app'
         minSdk 26
         targetSdk 35
-        versionCode 24
-        versionName '0.2.0-beta.23'
+        versionCode 25
+        versionName '0.2.0'
         resValue 'string', 'app_version_label', "Fieldnote ${versionName}"
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
@@ -16,11 +33,28 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+    signingConfigs {
+        if (signingFieldsPresent == releaseSigning.size()) {
+            release {
+                storeFile file(releaseSigning.storeFile)
+                storePassword releaseSigning.storePassword
+                keyAlias releaseSigning.keyAlias
+                keyPassword releaseSigning.keyPassword
+            }
+        }
+    }
     buildTypes {
         debug { applicationIdSuffix '' }
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug
+            if (signingFieldsPresent == releaseSigning.size()) {
+                signingConfig signingConfigs.release
+            } else if (useExistingBetaKey) {
+                if (!signingConfigs.debug.storeFile.isFile()) {
+                    throw new GradleException('The existing beta keystore is missing; refusing to generate a replacement release identity.')
+                }
+                signingConfig signingConfigs.debug
+            }
         }
     }
     lint { abortOnError true }

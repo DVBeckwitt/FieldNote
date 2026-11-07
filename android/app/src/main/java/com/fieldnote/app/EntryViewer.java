@@ -294,7 +294,6 @@ public final class EntryViewer extends Dialog {
             } else window.getDecorView().setSystemUiVisibility(dark ? 0
                     : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         }
-        main.post(tick);
     }
 
     /** Called by the host before recording and when the Activity goes into the background. */
@@ -329,11 +328,16 @@ public final class EntryViewer extends Dialog {
 
     private boolean live() { return !closed && !activity.isFinishing() && !activity.isDestroyed(); }
 
+    private boolean hasActivePlayback() {
+        for (MediaCard card : cards) if (card.wantsPlay) return true;
+        return false;
+    }
+
     private final Runnable tick = new Runnable() {
         @Override public void run() {
-            if (!live()) return;
+            if (!live() || !hasActivePlayback()) return;
             for (MediaCard card : cards) card.updateProgress();
-            main.postDelayed(this, 250);
+            if (hasActivePlayback()) main.postDelayed(this, 250);
         }
     };
 
@@ -636,9 +640,9 @@ public final class EntryViewer extends Dialog {
                 return;
             }
             if (uri == null || !allowPlayback(this)) return;
+            wantsPlay = true;
             main.removeCallbacks(tick);
             main.post(tick);
-            wantsPlay = true;
             status.setText("Loading…");
             setPlayLabel();
             int token = ++generation;
@@ -727,6 +731,7 @@ public final class EntryViewer extends Dialog {
 
         void releasePlayback() {
             generation++;
+            boolean wasPlaying = wantsPlay;
             wantsPlay = false;
             if (prepared && !pendingSeek) {
                 try { savedPosition = isVideo ? video.getCurrentPosition() : audio.getCurrentPosition(); }
@@ -750,6 +755,7 @@ public final class EntryViewer extends Dialog {
                 }
             }
             if (status.getText().toString().equals("Loading…")) status.setText("");
+            if (wasPlaying && !hasActivePlayback()) main.removeCallbacks(tick);
         }
 
         void setPlayLabel() {
@@ -865,7 +871,7 @@ public final class EntryViewer extends Dialog {
                 JSONObject saved = write.run();
                 editCompletion.post(() -> {
                     // A replacement Activity must also learn about edits accepted by the old viewer.
-                    activity.getApplicationContext().sendBroadcast(new Intent(CameraActivity.ACTION_MEDIA_SAVED)
+                    activity.getApplicationContext().sendBroadcast(new Intent(ProjectPublisher.ACTION_MEDIA_SAVED)
                             .setPackage(activity.getPackageName()).putExtra("entryId", entry.optString("id"))
                             .putExtra("projectUri", projectUri.toString()));
                     if (live()) {

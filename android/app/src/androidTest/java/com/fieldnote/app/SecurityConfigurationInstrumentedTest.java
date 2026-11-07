@@ -31,10 +31,13 @@ public final class SecurityConfigurationInstrumentedTest {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         PackageManager packages = context.getPackageManager();
         assertTrue(packages.getActivityInfo(new ComponentName(context, MainActivity.class), 0).exported);
-        assertFalse(packages.getActivityInfo(new ComponentName(context, CameraActivity.class), 0).exported);
+        assertThrows("The retired standalone camera must not remain registered",
+                PackageManager.NameNotFoundException.class, () -> packages.getActivityInfo(
+                        new ComponentName(context.getPackageName(), "com.fieldnote.app.CameraActivity"), 0));
         assertFalse(packages.getServiceInfo(new ComponentName(context, RecordingService.class), 0).exported);
         assertFalse(packages.getServiceInfo(new ComponentName(context, FloatingRecorderService.class), 0).exported);
         assertFalse(packages.getReceiverInfo(new ComponentName(context, RecordingWidget.class), 0).exported);
+        assertFalse(packages.getReceiverInfo(new ComponentName(context, RecordingWidgetControlReceiver.class), 0).exported);
         ServiceInfo publisher = packages.getServiceInfo(new ComponentName(context, ProjectPublisher.class), 0);
         assertTrue(publisher.exported);
         assertEquals("android.permission.BIND_JOB_SERVICE", publisher.permission);

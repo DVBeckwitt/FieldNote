@@ -10,8 +10,6 @@
     <item type="id" name="open_project_folder" />
     <item type="id" name="open_project_zip" />
     <item type="id" name="share_project_zip" />
-    <item type="id" name="take_photo" />
-    <item type="id" name="take_video" />
     <item type="id" name="project_title" />
     <item type="id" name="entry_list" />
     <item type="id" name="settings_button" />
@@ -38,7 +36,4 @@
     <item type="id" name="mic_photo_action" />
     <item type="id" name="mic_video_action" />
     <item type="id" name="mic_text_action" />
-    <item type="id" name="camera_shutter" />
-    <item type="id" name="camera_status" />
-    <item type="id" name="camera_stop_audio" />
 </resources>

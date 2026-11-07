@@ -985,6 +985,25 @@ public final class ProjectStore {
         }
     }
 
+    static final class PendingCounts {
+        final int pendingCount;
+        final int finalizedCount;
+
+        private PendingCounts(int pendingCount, int finalizedCount) {
+            this.pendingCount = pendingCount;
+            this.finalizedCount = finalizedCount;
+        }
+    }
+
+    /** Capture both counts under one lock; journal reads must stay off the main thread. */
+    PendingCounts pendingCounts() {
+        synchronized (CAPTURE_LOCK) {
+            int pending = Math.max(0, pendingCount());
+            int finalized = Math.max(0, Math.min(pending, retryablePendingCount()));
+            return new PendingCounts(pending, finalized);
+        }
+    }
+
     /** Journals plus orphan staging files, including output that cannot be safely auto-retried. */
     public int pendingCount() {
         synchronized (CAPTURE_LOCK) {
@@ -1595,13 +1614,6 @@ public final class ProjectStore {
         }
     }
 
-    private static void transfer(InputStream input, OutputStream output) throws IOException {
-        byte[] buffer = new byte[64 * 1024];
-        int count;
-        while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-        output.flush();
-    }
-
     private static Digest digest(InputStream input) throws IOException {
         try (InputStream owned = input) {
             MessageDigest sha = MessageDigest.getInstance("SHA-256");
@@ -1708,13 +1720,6 @@ public final class ProjectStore {
         if ("audio".equals(kind)) return ".m4a";
         if ("photo".equals(kind)) return ".jpg";
         if ("video".equals(kind)) return ".mp4";
-        throw new IOException("Unsupported media type.");
-    }
-
-    private static String mime(String kind) throws IOException {
-        if ("audio".equals(kind)) return "audio/mp4";
-        if ("photo".equals(kind)) return "image/jpeg";
-        if ("video".equals(kind)) return "video/mp4";
         throw new IOException("Unsupported media type.");
     }
 

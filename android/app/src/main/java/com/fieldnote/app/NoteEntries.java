@@ -7,8 +7,10 @@ import org.json.JSONObject;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /** Entry snapshots and display values, independent of the current project and UI filters. */
 final class NoteEntries {
@@ -78,7 +80,12 @@ final class NoteEntries {
             }
         }
         // Reverse the stable ascending sort to preserve the existing newest-first equal-time order.
-        result.sort(Comparator.comparingLong(NoteEntries::entryTime));
+        if (result.size() > 1) {
+            // Parse each capture timestamp once, rather than during every comparison.
+            Map<JSONObject, Long> captureTimes = new IdentityHashMap<>(result.size());
+            for (JSONObject entry : result) captureTimes.put(entry, entryTime(entry));
+            result.sort(Comparator.comparingLong(captureTimes::get));
+        }
         if (newestFirst) {
             java.util.Collections.reverse(result);
         }
@@ -144,6 +151,10 @@ final class NoteEntries {
         if (!tagMatch) {
             return false;
         }
+        String query = searchQuery.trim();
+        if (query.isEmpty()) {
+            return true;
+        }
         StringBuilder haystack = new StringBuilder(entryLabel(entry)).append(' ').append(entry.optString("text"))
                 .append(' ').append(tagText(entry));
         JSONArray media = entry.optJSONArray("media");
@@ -165,7 +176,7 @@ final class NoteEntries {
             }
         }
         String searchable = haystack.toString().toLowerCase(Locale.ROOT);
-        for (String word : searchQuery.trim().toLowerCase(Locale.ROOT).split("\\s+")) {
+        for (String word : query.toLowerCase(Locale.ROOT).split("\\s+")) {
             if (!searchable.contains(word)) {
                 return false;
             }

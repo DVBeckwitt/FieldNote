@@ -1,7 +1,7 @@
 # Building Fieldnote
 
 Use JDK 17 or a compatible newer JDK, Android SDK Platform 35, and the included
-Gradle wrapper. The beta was verified on Windows with JDK 21. The project pins
+Gradle wrapper. Release validation uses Windows with JDK 21. The project pins
 Gradle **8.14.6** and Android Gradle Plugin **8.6.0**; Java source/target compatibility
 is 17, minimum Android API is 26, and compile/target API is 35.
 
@@ -19,16 +19,17 @@ From the repository's `android/` directory, in PowerShell:
 .\gradlew.bat --no-daemon :app:assembleRelease :app:testDebugUnitTest :app:lintRelease
 ```
 
-The APK is written to `app/build/outputs/apk/release/app-release.apk`.
+Without a signing configuration, this writes the unsigned
+`app/build/outputs/apk/release/app-release-unsigned.apk`.
 JVM test results are under `app/build/test-results/testDebugUnitTest/`; the lint
 report is `app/build/reports/lint-results-release.html`. On a Unix-like shell,
-use `./gradlew` with the same tasks; the recorded beta validation used Windows.
+use `./gradlew` with the same tasks; the recorded release validation used Windows.
 
 ## Native tests
 
 Use a dedicated test emulator. These tests install app/test packages and can
 remove them during cleanup; do not use a device containing notes you need to
-keep. The beta's native checks used Android 16 / API 36 with an emulated rear
+keep. Native checks use Android 16 / API 36 with an emulated rear
 camera, no host audio, and snapshots disabled.
 
 Select your test target explicitly before running instrumentation:
@@ -45,15 +46,27 @@ Instrumentation uses the debug variant. Results are written under
 
 ## Signing and installation
 
-The current release configuration is non-debuggable but uses Gradle's local
-debug signing configuration. The published beta uses the maintainer's existing
-local certificate; a build on another machine will normally use a different
-certificate and cannot update that installed APK. No signing key is included in
-the repository. Use a separate test device for your own builds, or retain the
-same signing identity for updates to your own installations. Keep an installed
-app with pending captures and its data intact.
+Release builds are non-debuggable and unsigned by default. To sign with your
+own existing keystore, supply all four environment variables:
 
-For the downloadable build and normal use, see the [beta guide](BETA.md).
+- `FIELDNOTE_KEYSTORE_PATH`
+- `FIELDNOTE_KEYSTORE_PASSWORD`
+- `FIELDNOTE_KEY_ALIAS`
+- `FIELDNOTE_KEY_PASSWORD`
+
+Keep credentials outside the repository and command output. A partial signing
+configuration fails immediately. With signing configured, `assembleRelease`
+writes `app/build/outputs/apk/release/app-release.apk`.
+
+Published Fieldnote updates retain the maintainer's existing beta certificate
+so current installations can upgrade. That deliberate compatibility build uses
+`-PfieldnoteUseExistingBetaKey=true`; it requires the existing local keystore and
+refuses to generate a replacement. It cannot be combined with the environment
+configuration above. A different machine's key cannot update the published APK.
+No signing key is included in the repository. Use a separate test device for
+your own signing identity, and keep installed apps with pending captures intact.
+
+For the downloadable build and normal use, see the [user guide](GUIDE.md).
 The [validation summary](../docs/VALIDATION.md) distinguishes emulator tests,
 signed-release checks, and physical-device limits. There is currently no CI
 workflow; these commands are the local validation path.

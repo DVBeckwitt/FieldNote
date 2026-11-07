@@ -29,7 +29,6 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.HapticFeedbackConstants;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.animation.PathInterpolator;
 import android.text.InputType;
@@ -47,7 +46,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import org.json.JSONArray;
-import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.time.Instant;
@@ -146,7 +144,7 @@ public class MainActivity extends Activity {
     private final BroadcastReceiver recordingReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             updateRecording();
-            if (CameraActivity.ACTION_MEDIA_SAVED.equals(intent.getAction())) refreshProject();
+            if (ProjectPublisher.ACTION_MEDIA_SAVED.equals(intent.getAction())) refreshProject();
             if (ProjectPublisher.ACTION_STATE.equals(intent.getAction())) refreshPendingEntries();
         }
     };
@@ -232,7 +230,7 @@ public class MainActivity extends Activity {
             return;
         }
         RecordingService.Snapshot capture = RecordingService.snapshot();
-        if (capture.state == RecordingService.State.SAVING || capture.state == RecordingService.State.PAUSED) {
+        if (capture.state == RecordingService.State.SAVING) {
             toast("Finish the current recording first.");
             return;
         }
@@ -519,8 +517,7 @@ public class MainActivity extends Activity {
         recordButton.setOnClickListener(v -> {
             if (touchClick) return;
             recordButton.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-            if (RecordingService.isPaused()) textNote(RecordingService.snapshot().entryId);
-            else if (RecordingService.isRecording()) stopRecordingAndVideo();
+            if (RecordingService.isRecording()) stopRecordingAndVideo();
             else if (canRecord()) { startRecording(); RecordingService.lock(this); }
         });
         inlineCameraContainer = new FrameLayout(this);
@@ -773,7 +770,6 @@ public class MainActivity extends Activity {
     private boolean recordTouch(View view, MotionEvent event) {
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
-                if (RecordingService.isPaused()) { textNote(RecordingService.snapshot().entryId); return true; }
                 if (RecordingService.isBusy() && !RecordingService.isRecording()) return true;
                 stopOnRelease = RecordingService.isRecording();
                 if (!stopOnRelease && !captureReady()) return true;
@@ -931,11 +927,6 @@ public class MainActivity extends Activity {
     private void microphoneAction(String kind) {
         if (!captureReady()) return;
         RecordingService.Snapshot snapshot = RecordingService.snapshot();
-        if (RecordingService.isPaused()) {
-            if ("text".equals(kind)) textNote(snapshot.entryId);
-            else toast("Save or skip the text note first.");
-            return;
-        }
         if (RecordingService.isRecording()) {
             if (!projectUri.equals(snapshot.projectUri)) { toast("Return to the recording’s project first."); return; }
             if ("text".equals(kind)) {
@@ -1075,7 +1066,6 @@ public class MainActivity extends Activity {
         boolean recording = snapshot.state == RecordingService.State.RECORDING;
         boolean starting = snapshot.state == RecordingService.State.STARTING;
         boolean saving = snapshot.state == RecordingService.State.SAVING;
-        boolean paused = snapshot.state == RecordingService.State.PAUSED;
         boolean videoRecording = inlineCamera != null && inlineCamera.isRecording();
         markerButton.setEnabled(recording);
         markerButton.setAlpha(recording ? 1f : .45f);
@@ -1093,8 +1083,8 @@ public class MainActivity extends Activity {
         }
         if (snapshot.markerError != null && !snapshot.markerError.equals(observedMarkerError)) toast(snapshot.markerError);
         observedMarkerError = snapshot.markerError;
-        recordButton.recording = recording || starting || paused || videoRecording;
-        recordButton.locked = (recording || starting || paused) && snapshot.locked;
+        recordButton.recording = recording || starting || videoRecording;
+        recordButton.locked = (recording || starting) && snapshot.locked;
         recordButton.invalidate();
         if (recording) {
             boolean writing = captureKey(snapshot).equals(textRecordingKey);
@@ -1107,11 +1097,6 @@ public class MainActivity extends Activity {
                     && gesture.getDirection() == RecordingGesture.Direction.NONE ? "Return to center to arm gestures"
                     : "Slide ↗ to mark · return to center to repeat");
             recordButton.setContentDescription(snapshot.locked ? "Stop and save locked recording" : "Recording. Slide up to lock or release to save.");
-        } else if (paused) {
-            recordStatus.setText("Audio paused for text");
-            recordTitle.setText(duration(snapshot.elapsedMs()));
-            recordHelp.setText("Save or skip text to finish");
-            recordButton.setContentDescription("Audio paused. Tap to finish the text note.");
         } else if (starting) {
             recordStatus.setText("Starting…");
             recordTitle.setText("00:00");
@@ -1160,7 +1145,7 @@ public class MainActivity extends Activity {
         if (snapshot.state != observedState) {
             if (recording) recordButton.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
             observedState = snapshot.state;
-            if (!recording && !starting && !saving && !paused) {
+            if (!recording && !starting && !saving) {
                 textRecordingKey = null;
                 pendingMicAction = null;
                 pendingMicProject = null;
@@ -1600,8 +1585,7 @@ public class MainActivity extends Activity {
             return;
         }
         RecordingService.Snapshot snapshot = RecordingService.snapshot();
-        if ((snapshot.state == RecordingService.State.PAUSED
-                || (snapshot.state == RecordingService.State.RECORDING && captureKey(snapshot).equals(textRecordingKey)))
+        if (snapshot.state == RecordingService.State.RECORDING && captureKey(snapshot).equals(textRecordingKey)
                 && projectUri.equals(snapshot.projectUri)
                 && !captureKey(snapshot).equals(finishingTextToken) && noteDialog == null) textNote(snapshot.entryId);
     }
@@ -1609,7 +1593,7 @@ public class MainActivity extends Activity {
     private void finishTextRecording(Uri destination, String entryId, String recordingKey) {
         RecordingService.Snapshot snapshot = RecordingService.snapshot();
         if (recordingKey != null && recordingKey.equals(captureKey(snapshot))
-                && (RecordingService.isRecording() || snapshot.state == RecordingService.State.PAUSED)
+                && RecordingService.isRecording()
                 && destination.equals(snapshot.projectUri) && entryId.equals(snapshot.entryId)) {
             finishingTextToken = captureKey(snapshot);
             textRecordingKey = null;
@@ -1676,8 +1660,7 @@ public class MainActivity extends Activity {
         content.addView(text("Tags help you find related notes. Example: apparatus, trial 2", 12, muted));
         EditText titleInput = title;
         RecordingService.Snapshot capture = RecordingService.snapshot();
-        boolean textCapture = (capture.state == RecordingService.State.PAUSED
-                || (capture.state == RecordingService.State.RECORDING && captureKey(capture).equals(textRecordingKey)))
+        boolean textCapture = capture.state == RecordingService.State.RECORDING && captureKey(capture).equals(textRecordingKey)
                 && destination.equals(capture.projectUri) && entryId.equals(capture.entryId);
         String recordingKey = textCapture ? captureKey(capture) : null;
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle(existing == null ? "Text note" : "Edit note")
@@ -2085,7 +2068,7 @@ public class MainActivity extends Activity {
         visible = true;
         MetadataCollector.start(this);
         IntentFilter filter = new IntentFilter(RecordingService.ACTION_STATE);
-        filter.addAction(CameraActivity.ACTION_MEDIA_SAVED);
+        filter.addAction(ProjectPublisher.ACTION_MEDIA_SAVED);
         filter.addAction(ProjectPublisher.ACTION_STATE);
         // Signature permission also protects this receiver on API 26–32, where
         // the newer NOT_EXPORTED flag is not enforced by the platform.
@@ -2221,7 +2204,6 @@ public class MainActivity extends Activity {
         try { return DocumentsContract.getDocumentId(uri).replace("primary:", "Internal storage / ").replace(':', '/'); }
         catch (IllegalArgumentException error) { try { return DocumentsContract.getTreeDocumentId(uri).replace("primary:", "Internal storage / "); } catch (IllegalArgumentException ignored) { return "Selected folder"; } }
     }
-    private String instantLabel(String value) { try { return DateTimeFormatter.ofPattern("MMM d, yyyy · HH:mm:ss XXX", Locale.getDefault()).withZone(ZoneId.systemDefault()).format(Instant.parse(value)); } catch (Exception ignored) { return "Unavailable"; } }
     private String clock(long timestamp) { return DateTimeFormatter.ofPattern("HH:mm:ss", Locale.getDefault()).withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(timestamp)); }
     private String duration(long milliseconds) { return NoteEntries.duration(milliseconds); }
     private String errorMessage(Exception error) { return error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage(); }
@@ -2268,8 +2250,8 @@ public class MainActivity extends Activity {
 
     private final class RecordView extends MicrophoneView {
         RecordView(Context context) {
-            super(context, MainActivity.this.dark, MainActivity.this.panel,
-                    MainActivity.this.accent, MainActivity.this.recordingColor, new MicrophoneView.ActionListener() {
+            super(context, MainActivity.this.dark, MainActivity.this.accent,
+                    MainActivity.this.recordingColor, new MicrophoneView.ActionListener() {
                         @Override public void onPhoto() { MainActivity.this.microphoneAction("photo"); }
                         @Override public void onVideo() { MainActivity.this.microphoneAction("video"); }
                         @Override public void onText() { MainActivity.this.microphoneAction("text"); }

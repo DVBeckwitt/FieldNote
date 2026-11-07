@@ -77,8 +77,7 @@ public final class RecordingWidget extends AppWidgetProvider {
         RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.widget_mic);
         RecordingService.Snapshot capture = RecordingService.snapshot();
         RecordingService.State state = capture.state;
-        boolean active = state == RecordingService.State.STARTING || state == RecordingService.State.RECORDING
-                || state == RecordingService.State.PAUSED;
+        boolean active = state == RecordingService.State.STARTING || state == RecordingService.State.RECORDING;
         // A launcher can retain the purple view after process death. Its Stop must
         // never turn into Start, or stop a later original after a delayed click.
         Intent action = active ? RecordingShortcuts.recordingWidgetStopIntent(context, capture)
@@ -92,7 +91,6 @@ public final class RecordingWidget extends AppWidgetProvider {
         views.setInt(R.id.widget_mic_button, "setBackgroundResource",
                 active ? R.drawable.widget_mic_recording_background : R.drawable.widget_mic_background);
         int description = state == RecordingService.State.STARTING ? R.string.widget_mic_starting
-                : state == RecordingService.State.PAUSED ? R.string.widget_mic_paused
                 : active ? R.string.widget_mic_recording
                 : state == RecordingService.State.SAVING ? R.string.widget_mic_saving : R.string.widget_mic_description;
         views.setContentDescription(R.id.widget_mic_button, context.getString(description));

@@ -311,7 +311,7 @@ public final class FloatingRecorderService extends Service {
         guide = new GestureGuideView(visualContext, dp(RecordingGesture.ACTIVATION_DISTANCE_DP), dp(RecordingGesture.HOME_RADIUS_DP), true);
         guide.configureColors(accent, Color.parseColor(dark ? "#0C1627" : "#F7FAFF"), ink);
         surface.addView(guide, new FrameLayout.LayoutParams(-1, -1));
-        microphone = new MicrophoneView(visualContext, dark, panel, accent, recordingColor, new MicrophoneView.ActionListener() {
+        microphone = new MicrophoneView(visualContext, dark, accent, recordingColor, new MicrophoneView.ActionListener() {
             @Override public void onPhoto() { microphoneAction("photo"); }
             @Override public void onVideo() { microphoneAction("video"); }
             @Override public void onText() { microphoneAction("text"); }
@@ -519,9 +519,6 @@ public final class FloatingRecorderService extends Service {
             case MotionEvent.ACTION_DOWN:
                 if (!captureAllowed() || moving || textDialog != null || textSaving) return true;
                 RecordingService.Snapshot capture = RecordingService.snapshot();
-                if (capture.state == RecordingService.State.PAUSED && sameProject(capture)) {
-                    openText(capture.projectUri, capture.entryId, CaptureRef.of(capture)); return true;
-                }
                 boolean foreignCapture = RecordingService.isBusy() && !sameProject(capture);
                 if (RecordingService.isBusy() && !RecordingService.isRecording() && !foreignCapture) return true;
                 touching = true;
@@ -690,10 +687,6 @@ public final class FloatingRecorderService extends Service {
         if (!captureAllowed() || closeOnlyTouch || textSaving || textDialog != null || pendingText != null) return;
         RecordingService.Snapshot capture = RecordingService.snapshot();
         if (RecordingService.isBusy() && !sameProject(capture)) { toast("Finish the current recording first."); return; }
-        if (capture.state == RecordingService.State.PAUSED) {
-            if ("text".equals(kind)) openText(project, capture.entryId, CaptureRef.of(capture));
-            return;
-        }
         if (capture.state == RecordingService.State.SAVING) { toast("Wait for the current audio to finish saving."); return; }
         CaptureRef audio = RecordingService.isRecording() ? CaptureRef.of(capture) : null;
         if ("text".equals(kind)) {
@@ -732,7 +725,7 @@ public final class FloatingRecorderService extends Service {
             if (capture.state == RecordingService.State.STARTING) return;
             CaptureRef target = pendingText;
             pendingText = null;
-            if (capture.state == RecordingService.State.RECORDING || capture.state == RecordingService.State.PAUSED)
+            if (capture.state == RecordingService.State.RECORDING)
                 openText(target.project, target.entry, target);
             return;
         }
@@ -822,7 +815,7 @@ public final class FloatingRecorderService extends Service {
         RecordingService.Snapshot capture = RecordingService.snapshot();
         if (heldCapture != null) heldCapture.matches(capture);
         flushMarkers(capture);
-        boolean audioActive = RecordingService.isRecording() || RecordingService.isPaused();
+        boolean audioActive = RecordingService.isRecording();
         boolean videoRecording = camera != null && camera.isRecording();
         microphone.recording = audioActive || videoRecording;
         microphone.locked = audioActive && capture.locked;

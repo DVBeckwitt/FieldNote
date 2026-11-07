@@ -1,20 +1,20 @@
-# Fieldnote 0.2.0-beta.23
+# Fieldnote 0.2.0
 
-Android beta (version code 24) for Android 8.0 and later.
+Android release (version code 25) for Android 8.0 and later.
 No Google services are needed; no network permission is requested.
 Root access is neither needed nor used.
 
 ## Install
 
-Download the APK from the [beta 23 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0-beta.23).
+Download the APK from the [0.2.0 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0).
 Transfer it to the phone and open it from Files. If prompted, allow that
-installer source to install apps, then complete installation. This personal beta
-uses the local signing certificate; updates over earlier betas must use the same
+installer source to install apps, then complete installation. The published release
+retains the existing signing certificate; updates over earlier betas use the same
 certificate. Keep the existing app installed to preserve its permissions,
 settings, and any pending captures.
 
-Beta 23 makes the **Recorder** widget start and stop audio directly on the home
-screen. It replaces the previous widget action that opened the floating control.
+The **Recorder** widget starts and stops audio directly on the home screen.
+It replaces the older widget action that opened the floating control.
 The separate **Record now** and **Floating mic** shortcuts remain available.
 The microphone is blue while idle and turns purple with a radiating glow during
 recording, in the app, floating control, and audio widget. The widget glow is

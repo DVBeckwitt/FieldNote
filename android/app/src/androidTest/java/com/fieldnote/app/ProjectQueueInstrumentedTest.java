@@ -7,6 +7,8 @@ import android.app.job.JobInfo;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.DocumentsContract;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -117,6 +119,43 @@ public final class ProjectQueueInstrumentedTest {
             }
             assertTrue(editor.commit());
         }
+    }
+
+    @Test public void publisherCallbacksStayResponsiveWhileCaptureJournalIsLocked() throws Exception {
+        java.lang.reflect.Field field = ProjectStore.class.getDeclaredField("CAPTURE_LOCK");
+        field.setAccessible(true);
+        Object captureLock = field.get(null);
+        CountDownLatch acquired = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Future<?> writer = captures.submit(() -> {
+            synchronized (captureLock) {
+                acquired.countDown();
+                release.await();
+            }
+            return null;
+        });
+        try {
+            assertTrue("The background journal writer owns the capture lock", acquired.await(3, TimeUnit.SECONDS));
+            CountDownLatch requested = new CountDownLatch(1);
+            CountDownLatch responsive = new CountDownLatch(1);
+            Handler main = new Handler(Looper.getMainLooper());
+            assertTrue(main.post(() -> {
+                ProjectPublisher.retry(context); // Queues pump before the sentinel below.
+                requested.countDown();
+                main.post(responsive::countDown);
+            }));
+            assertTrue("The main thread accepts the publication request", requested.await(3, TimeUnit.SECONDS));
+            assertTrue("Publisher callbacks must not wait for capture-journal disk I/O on the main thread",
+                    responsive.await(3, TimeUnit.SECONDS));
+            assertFalse("Responsiveness must be established before the writer releases its lock", writer.isDone());
+        } finally {
+            release.countDown();
+            writer.get(5, TimeUnit.SECONDS);
+        }
+        awaitCondition("The publisher finishes after the journal writer releases its lock", 10_000L,
+                () -> !ProjectPublisher.snapshot().running);
+        assertEquals(store.pendingCount(), ProjectPublisher.snapshot().pendingCount);
+        assertEquals(store.retryablePendingCount(), ProjectPublisher.snapshot().finalizedCount);
     }
 
     @Test public void blockedZipAllowsConcurrentAudioPhotoAndVideoStagingWithoutLostLinks() throws Exception {

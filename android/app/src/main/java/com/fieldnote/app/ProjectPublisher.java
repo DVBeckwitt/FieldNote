@@ -24,6 +24,7 @@ import java.util.concurrent.Executors;
 /** Publishes durable local captures through one process worker and a persisted wakeup. */
 public final class ProjectPublisher extends JobService {
     public static final String ACTION_STATE = "com.fieldnote.app.PROJECT_PUBLICATION_STATE";
+    public static final String ACTION_MEDIA_SAVED = "com.fieldnote.app.MEDIA_SAVED";
     public static final int JOB_ID = 0x464e5055;
     static final String EXTRA_SCHEDULE_ID = "com.fieldnote.app.PROJECT_SCHEDULE_ID";
     private static final long RETRY_DELAY_MS = 30_000L;
@@ -49,6 +50,7 @@ public final class ProjectPublisher extends JobService {
     private static boolean finishingJobs;
     private static boolean replaceFinishedJob;
     private static boolean scheduledRegular;
+    private static boolean countRefreshQueued;
     private static long scheduledRetryAt = -1;
     private static String publicationError = "";
     private static String schedulingError = "";
@@ -160,7 +162,7 @@ public final class ProjectPublisher extends JobService {
         return true;
     }
 
-    /** Called only on the main thread; all storage/count I/O stays outside GATE. */
+    /** Main-thread scheduling only; queue scans and publication run on WORKER. */
     private static void pump(Context app) {
         refreshCounts(app);
         boolean cooling;
@@ -201,7 +203,7 @@ public final class ProjectPublisher extends JobService {
         }
         broadcast(app, ACTION_STATE);
         try { WORKER.execute(() -> publish(app, run)); }
-        catch (RuntimeException failure) { complete(app, run, "The project worker could not start: " + message(failure), false); }
+        catch (RuntimeException failure) { complete(app, run, "The project worker could not start: " + message(failure), false, null); }
     }
 
     private static void publish(Context app, Run run) {
@@ -222,11 +224,12 @@ public final class ProjectPublisher extends JobService {
         }
         boolean published = ProjectStore.publicationGeneration() != before;
         final String result = error;
-        MAIN.post(() -> complete(app, run, result, published));
+        ProjectStore.PendingCounts counts = readCounts(app);
+        MAIN.post(() -> complete(app, run, result, published, counts));
     }
 
-    private static void complete(Context app, Run run, String error, boolean published) {
-        refreshCounts(app);
+    private static void complete(Context app, Run run, String error, boolean published,
+                                 ProjectStore.PendingCounts counts) {
         boolean anotherPass;
         boolean failed;
         synchronized (GATE) {
@@ -252,9 +255,10 @@ public final class ProjectPublisher extends JobService {
             }
             anotherPass = generation > handledGeneration && (!failed || explicitRetry || newWork);
             reserved = anotherPass;
-            updateSnapshotLocked(state.pendingCount, state.finalizedCount);
+            updateSnapshotLocked(counts == null ? state.pendingCount : counts.pendingCount,
+                    counts == null ? state.finalizedCount : counts.finalizedCount);
         }
-        if (published) broadcast(app, CameraActivity.ACTION_MEDIA_SAVED);
+        if (published) broadcast(app, ACTION_MEDIA_SAVED);
         broadcast(app, ACTION_STATE);
         if (anotherPass && !failed) {
             // Keep the same live job/wakelock while draining captures staged during this pass.
@@ -353,13 +357,39 @@ public final class ProjectPublisher extends JobService {
     }
 
     private static void refreshCounts(Context app) {
+        synchronized (GATE) {
+            if (countRefreshQueued) return;
+            countRefreshQueued = true;
+        }
         try {
-            ProjectStore store = new ProjectStore(app);
-            int pending = Math.max(0, store.pendingCount());
-            int finalized = Math.max(0, Math.min(pending, store.retryablePendingCount()));
-            synchronized (GATE) { updateSnapshotLocked(pending, finalized); }
+            WORKER.execute(() -> {
+                ProjectStore.PendingCounts counts = readCounts(app);
+                if (!MAIN.post(() -> {
+                    boolean changed;
+                    synchronized (GATE) {
+                        countRefreshQueued = false;
+                        changed = counts != null && (counts.pendingCount != state.pendingCount
+                                || counts.finalizedCount != state.finalizedCount);
+                        if (changed) updateSnapshotLocked(counts.pendingCount, counts.finalizedCount);
+                    }
+                    if (changed) broadcast(app, ACTION_STATE);
+                })) {
+                    synchronized (GATE) { countRefreshQueued = false; }
+                }
+            });
+        } catch (RuntimeException failure) {
+            synchronized (GATE) { countRefreshQueued = false; }
+            reportSchedulingFailure(app, "Pending capture status could not be queued: " + message(failure));
+        }
+    }
+
+    /** Called on the same serial worker as publication so snapshots reach MAIN in order. */
+    private static ProjectStore.PendingCounts readCounts(Context app) {
+        try {
+            return new ProjectStore(app).pendingCounts();
         } catch (RuntimeException failure) {
             reportSchedulingFailure(app, "Pending capture status is unavailable: " + message(failure));
+            return null;
         }
     }
 

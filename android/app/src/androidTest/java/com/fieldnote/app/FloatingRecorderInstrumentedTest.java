@@ -698,7 +698,6 @@ public final class FloatingRecorderInstrumentedTest {
         assertEquals(started.startedAt, current.startedAt);
         assertEquals(started.startedElapsedRealtime, current.startedElapsedRealtime);
         assertEquals(locked, current.locked);
-        assertFalse(current.paused);
         assertNull(current.error);
     }
 
