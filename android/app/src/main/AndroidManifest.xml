@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -17,6 +20,7 @@
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
     <application android:allowBackup="false" android:fullBackupContent="@xml/backup_rules" android:dataExtractionRules="@xml/data_extraction_rules" android:label="Fieldnote" android:theme="@style/FieldnoteDark" android:icon="@drawable/ic_launcher" android:roundIcon="@drawable/ic_launcher" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="portrait" android:enableOnBackInvokedCallback="true">
             <intent-filter>
@@ -25,6 +29,7 @@
             </intent-filter>
         </activity>
         <service android:name=".RecordingService" android:exported="false" android:foregroundServiceType="microphone|shortService" android:stopWithTask="false" />
+        <service android:name=".WatchReceiverService" android:exported="false" android:foregroundServiceType="connectedDevice" android:stopWithTask="false" />
         <receiver android:name=".RecordingWidgetControlReceiver" android:exported="false" />
         <service android:name=".FloatingRecorderService" android:exported="false" android:foregroundServiceType="specialUse|camera|microphone" android:stopWithTask="false">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-enabled floating multimedia recorder controls" />

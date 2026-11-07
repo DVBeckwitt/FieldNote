@@ -24,8 +24,8 @@ android {
         applicationId 'com.fieldnote.app'
         minSdk 26
         targetSdk 35
-        versionCode 25
-        versionName '0.2.0'
+        versionCode 26
+        versionName '1.0.0'
         resValue 'string', 'app_version_label', "Fieldnote ${versionName}"
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
@@ -61,6 +61,7 @@ android {
 }
 
 dependencies {
+    implementation project(':watchlink')
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test:runner:1.6.2'
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'

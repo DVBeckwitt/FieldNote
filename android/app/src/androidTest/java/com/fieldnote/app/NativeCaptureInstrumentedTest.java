@@ -3002,11 +3002,14 @@ public final class NativeCaptureInstrumentedTest {
             assertPlaybackTick(viewer, false);
             assertTrue(viewer.findViewById(EntryViewer.VIDEO_PLAY_ID).performClick());
         });
-        await("embedded VideoView plays real frames with an advancing position", 15_000, () -> {
+        await("embedded video advances beyond the backward-seek target", 15_000, () -> {
             AtomicBoolean playing = new AtomicBoolean();
             onEntryViewer(viewer -> {
                 VideoView video = viewer.findViewById(EntryViewer.VIDEO_VIEW_ID);
-                playing.set(video.isPlaying() && video.getCurrentPosition() > 100);
+                SeekBar seek = viewer.findViewById(EntryViewer.VIDEO_SEEK_ID);
+                // Screenshot wall time does not establish how far decoded media advanced.
+                playing.set(video.isPlaying() && video.getCurrentPosition() > 600
+                        && seek.getProgress() > 600);
             });
             return playing.get();
         });
@@ -3021,7 +3024,7 @@ public final class NativeCaptureInstrumentedTest {
             assertFalse("Pause stops native video playback", ((VideoView) viewer.findViewById(EntryViewer.VIDEO_VIEW_ID)).isPlaying());
             assertEquals("Play video", play.getContentDescription().toString());
             SeekBar seek = viewer.findViewById(EntryViewer.VIDEO_SEEK_ID);
-            assertTrue("The review screenshot let playback advance beyond the seek target", seek.getProgress() > 600);
+            assertTrue("Playback advanced beyond the backward-seek target", seek.getProgress() > 600);
             Bundle progress = new Bundle();
             progress.putFloat(AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, 0);
             assertTrue("TalkBack can seek paused video back to the beginning",

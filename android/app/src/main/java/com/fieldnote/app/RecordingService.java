@@ -407,15 +407,28 @@ public final class RecordingService extends Service {
             widgetSetupRequired("Open Fieldnote and allow microphone access, then tap the recording widget again.");
             return;
         }
+        // Bind the selected project to this tap before asynchronous cache/provider I/O.
+        // Opening another project while capture starts or records must not redirect it.
+        final Uri destination;
+        try {
+            destination = store.currentProject();
+            if (destination == null) {
+                widgetSetupRequired("Open a project in Fieldnote, then tap the recording widget again.");
+                return;
+            }
+        } catch (RuntimeException failure) {
+            widgetSetupRequired("Open a project in Fieldnote, then tap the recording widget again.");
+            return;
+        }
+        project = destination;
+        update(State.STARTING, null);
         // Declare the while-in-use type before any provider lookup outlives the click grant.
         if (!startMicrophoneForeground()) return;
         worker.post(() -> {
             try {
                 if (stopRequested || destroyed) { cancelBeforeRecording(); return; }
-                Uri destination = store.lastCreatedProject();
-                if (destination == null) throw new IOException("Create a project in Fieldnote, then tap the recording widget again.");
                 if (store.readCachedProject(destination) == null) {
-                    if (!store.isArchive(destination)) throw new IOException("Open and convert the latest project in Fieldnote first.");
+                    if (!store.isArchive(destination)) throw new IOException("Open and convert the selected project in Fieldnote first.");
                     store.readProject(destination);
                 }
                 if (stopRequested || destroyed) { cancelBeforeRecording(); return; }
@@ -491,7 +504,9 @@ public final class RecordingService extends Service {
         main.post(() -> {
             Toast.makeText(getApplicationContext(), explanation, Toast.LENGTH_LONG).show();
             NotificationManager notifications = getSystemService(NotificationManager.class);
-            PendingIntent setup = PendingIntent.getActivity(this, 2005, RecordingShortcuts.recordIntent(this),
+            Intent openFieldnote = new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            PendingIntent setup = PendingIntent.getActivity(this, 2005, openFieldnote,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             Notification notification = new Notification.Builder(this, CHANNEL)
                     .setSmallIcon(R.drawable.ic_launcher).setContentTitle("Set up the recording widget")

@@ -6,6 +6,9 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothManager;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -63,6 +66,7 @@ public class MainActivity extends Activity {
     private static final int PICK_CREATE = 40, PICK_DEFAULT = 41, PICK_IMPORT = 42,
             PICK_LEGACY = 43, PICK_MIGRATION_DESTINATION = 44, PICK_OVERLAY = 45;
     private static final int PERMISSION_MIC = 50, PERMISSION_CAMERA = 51, PERMISSION_LOCATION = 52, PERMISSION_FLOATING = 53;
+    private static final int PERMISSION_WATCH = 54;
     private static final long HOLD_DELAY_MS = 180;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -101,6 +105,7 @@ public class MainActivity extends Activity {
     private EntryViewer entryViewer;
     private AlertDialog noteDialog;
     private AlertDialog settingsDialog;
+    private AlertDialog watchDialog;
     private AlertDialog filesDialog;
     private InlineCamera inlineCamera;
     private FrameLayout inlineCameraContainer;
@@ -143,6 +148,10 @@ public class MainActivity extends Activity {
     };
     private final BroadcastReceiver recordingReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
+            if (WatchReceiverService.ACTION_STATUS_CHANGED.equals(intent.getAction())) {
+                if (watchDialog != null) watchDialog.setMessage(watchStatus());
+                return;
+            }
             updateRecording();
             if (ProjectPublisher.ACTION_MEDIA_SAVED.equals(intent.getAction())) refreshProject();
             if (ProjectPublisher.ACTION_STATE.equals(intent.getAction())) refreshPendingEntries();
@@ -1241,6 +1250,12 @@ public class MainActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == PERMISSION_WATCH) {
+            permissionRequest = false;
+            if (hasWatchPermission()) chooseWatch();
+            else toast("Allow Nearby devices to receive watch recordings.");
+            return;
+        }
         permissionRequest = false;
         if (touching && gesture.getDirection() == RecordingGesture.Direction.RIGHT && (startedByTouch || stopOnRelease))
             stopGestureVideo();
@@ -2019,7 +2034,8 @@ public class MainActivity extends Activity {
             main.post(() -> { if (!destroyed) toast(accepted ? "Confirm the widget in your launcher." : "Add Recorder from your launcher’s widget picker."); });
         }));
         addAction(content, "Show floating mic", () -> acceptQuickIntent(RecordingShortcuts.overlayIntent(this)));
-        content.addView(text("Recorder widget: tap to start or stop audio on your home screen. Record now opens this screen and starts audio. Floating mic keeps the full swipe controls over other apps. New recordings use your last-created project; only the floating mic needs Display over other apps permission.", 12, muted));
+        content.addView(text("Recorder widget: tap to start or stop audio on your home screen in the currently selected project. Record now opens this screen and starts audio. Floating mic keeps the full swipe controls over other apps. Record now and Floating mic use your last-created project. Only the floating mic needs Display over other apps permission.", 12, muted));
+        addAction(content, "Watch recordings", this::watchRecordings);
         TextView version = text(getString(R.string.app_version_label), 12, muted);
         version.setPadding(0, dp(20), 0, dp(12));
         content.addView(version);
@@ -2033,6 +2049,65 @@ public class MainActivity extends Activity {
         metadata.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("metadata_enabled", checked).apply(); MetadataCollector.start(this); });
         dialog.show();
         updateMotionControls();
+    }
+
+    private void watchRecordings() {
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Watch recordings")
+                .setMessage(watchStatus())
+                .setPositiveButton("Choose watch", (clicked, which) -> chooseWatch())
+                .setNeutralButton("Stop receiving", (clicked, which) -> WatchReceiverService.stop(this))
+                .setNegativeButton("Done", null).create();
+        watchDialog = dialog;
+        dialog.setOnDismissListener(ignored -> watchDialog = null);
+        dialog.show();
+    }
+
+    private String watchStatus() {
+        return WatchReceiverService.status() + "\n\nFieldnote receives audio from a paired watch over Bluetooth. Open the project you want before sending a recording.";
+    }
+
+    private boolean hasWatchPermission() {
+        return Build.VERSION.SDK_INT < 31
+                || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void chooseWatch() {
+        if (!hasWatchPermission()) {
+            permissionRequest = true;
+            requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT}, PERMISSION_WATCH);
+            return;
+        }
+        BluetoothManager manager = getSystemService(BluetoothManager.class);
+        BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
+        try {
+            if (adapter == null || !adapter.isEnabled()) {
+                toast("Turn on Bluetooth and pair your watch first.");
+                return;
+            }
+            List<BluetoothDevice> devices = new ArrayList<>(adapter.getBondedDevices());
+            if (devices.isEmpty()) {
+                toast("Pair your watch with this phone first.");
+                return;
+            }
+            String[] labels = new String[devices.size()];
+            for (int i = 0; i < devices.size(); i++) {
+                BluetoothDevice device = devices.get(i);
+                String name = device.getName();
+                String address = device.getAddress();
+                labels[i] = (name == null || name.isEmpty() ? "Paired device" : name) + " · " + address.substring(12);
+            }
+            new AlertDialog.Builder(this).setTitle("Receive recordings from")
+                    .setItems(labels, (dialog, which) -> {
+                        try {
+                            WatchReceiverService.start(this, devices.get(which).getAddress());
+                            toast("Starting Bluetooth reception. Check Watch recordings for status.");
+                        } catch (SecurityException | IllegalStateException error) {
+                            toast("Could not start watch reception. Check Bluetooth and Nearby devices access.");
+                        }
+                    }).setNegativeButton("Cancel", null).show();
+        } catch (SecurityException error) {
+            toast("Allow Nearby devices to receive watch recordings.");
+        }
     }
 
     private void retryPending() {
@@ -2070,6 +2145,7 @@ public class MainActivity extends Activity {
         IntentFilter filter = new IntentFilter(RecordingService.ACTION_STATE);
         filter.addAction(ProjectPublisher.ACTION_MEDIA_SAVED);
         filter.addAction(ProjectPublisher.ACTION_STATE);
+        filter.addAction(WatchReceiverService.ACTION_STATUS_CHANGED);
         // Signature permission also protects this receiver on API 26–32, where
         // the newer NOT_EXPORTED flag is not enforced by the platform.
         registerReceiver(recordingReceiver, filter, "com.fieldnote.app.INTERNAL", null, Context.RECEIVER_NOT_EXPORTED);
@@ -2140,6 +2216,7 @@ public class MainActivity extends Activity {
         main.removeCallbacks(continueAfterOverlayHide);
         if (motionControls != null) motionControls.close();
         if (settingsDialog != null) settingsDialog.dismiss();
+        if (watchDialog != null) watchDialog.dismiss();
         if (filesDialog != null) filesDialog.dismiss();
         cancelNotesMotion();
         if (Build.VERSION.SDK_INT >= 33 && notesBackCallback != null) {

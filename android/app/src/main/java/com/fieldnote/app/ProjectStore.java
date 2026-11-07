@@ -24,6 +24,8 @@ import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
@@ -368,6 +370,36 @@ public final class ProjectStore {
             if (!file.createNewFile()) throw new IOException("Could not reserve a recording file.");
             return file;
         }
+    }
+
+    /** Adopts a verified original before its receipt becomes eligible for publication. */
+    void adoptWatchRecording(UUID clipId, File received) throws IOException {
+        synchronized (CAPTURE_LOCK) {
+            ensurePendingDirectory();
+            File pending = watchRecordingFile(clipId);
+            // An interrupted attempt may already have moved the same verified bytes.
+            // The importer checks the transfer against the durable receipt before retrying.
+            if (!pending.exists()) {
+                Files.move(received.toPath(), pending.toPath(), StandardCopyOption.ATOMIC_MOVE);
+            } else if (!pending.isFile() || pending.length() != received.length()) {
+                throw new IOException("The watch recording differs from the retained original.");
+            }
+        }
+    }
+
+    /** A durable receipt owns this original until the normal ZIP publisher clears it. */
+    void publishWatchRecording(Uri project, UUID clipId, long startedAt, long endedAt,
+                               JSONObject metadata) throws IOException {
+        synchronized (CAPTURE_LOCK) {
+            File pending = watchRecordingFile(clipId);
+            if (pending.isFile()) {
+                stageCapture(project, "watch-" + clipId, "audio", pending, startedAt, endedAt, metadata, "complete");
+            }
+        }
+    }
+
+    private File watchRecordingFile(UUID clipId) {
+        return new File(pendingDirectory, "capture-watch-" + clipId + ".m4a");
     }
 
     public void beginCapture(Uri project, String entryId, String kind, File file,

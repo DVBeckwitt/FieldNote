@@ -1,12 +1,12 @@
-# Fieldnote 0.2.0
+# Fieldnote 1.0.0
 
-Android release (version code 25) for Android 8.0 and later.
+Android release (version code 26) for Android 8.0 and later.
 No Google services are needed; no network permission is requested.
 Root access is neither needed nor used.
 
 ## Install
 
-Download the APK from the [0.2.0 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v0.2.0).
+Download `Fieldnote-1.0.0.apk` from the [1.0.0 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v1.0.0).
 Transfer it to the phone and open it from Files. If prompted, allow that
 installer source to install apps, then complete installation. The published release
 retains the existing signing certificate; updates over earlier betas use the same
@@ -89,13 +89,61 @@ Standalone video includes embedded audio when microphone permission is available
 Inline video during narration has no embedded audio: the voice stays in the
 separate linked `.m4a`. Both originals remain in the same entry.
 
+## Record from a Galaxy Watch
+
+This setup uses the Fieldnote phone build with watch support and the separate
+**Fieldnote Voice** app for Wear OS. Pair the watch with your Android phone first.
+Install `Fieldnote-Voice-1.0.0.apk` from the same release on the watch using
+[Wear OS wireless debugging](https://developer.android.com/training/wearables/get-started/debugging).
+The watch app requires Wear OS 3 or newer. See [build and install commands](BUILDING.md#wear-os-companion).
+
+1. In Fieldnote on the phone, open your destination project. In **Settings →
+   Watch recordings → Choose watch**, grant **Nearby devices** access when asked
+   and select your paired watch. The watch receiver stays active while the phone
+   is locked. Use **Stop receiving** to turn it off.
+2. Open **Fieldnote Voice** on the watch. Choose **Connect phone**, grant
+   **Nearby devices** access when asked, and select your paired phone.
+3. In Galaxy Wearable on your phone, go to **Watch settings → Buttons and gestures
+   → Home button → Double press** and choose **Fieldnote Voice**. Some Watch4
+   software versions list these controls under **Advanced features**.
+4. On watches with **Settings → Buttons and gestures → Knock knock**, turn the
+   gesture on, choose **Apps**, and select **Fieldnote Voice**. Make a fist and
+   bend your wrist down and up twice to launch it. Wake and unlock the watch
+   before using the gesture.
+5. Double-press the upper watch button or use Knock knock to record. Grant
+   microphone access the first time. Repeat the shortcut while recording, or tap
+   **Stop**, to send the recording. Fieldnote saves the original
+   `.m4a` and its capture times as a new audio entry in the project open when the
+   phone begins receiving it. Keep that project open until the watch shows it
+   was sent. The entry may briefly show **Adding to ZIP**.
+
+An active recording continues if you go Home, open another app, or let the watch
+display sleep. Allow notifications to use **Stop** from the recording notification.
+You can also return to Fieldnote Voice and tap **Stop**, or repeat the configured
+shortcut while the watch is unlocked.
+Samsung's Knock knock shortcut requires the watch to be unlocked before it can
+launch an app. The phone can remain locked while receiving a recording.
+Long recordings save automatically as they approach the Bluetooth transfer size
+limit. The watch shows that it saved at the limit; start another recording to
+continue.
+
+Bluetooth must be on and the phone receiver ready to receive. If the transfer
+fails, the recording stays on the watch. Open the intended project on the phone,
+then choose **Phone transfer → Send saved** on the watch and select the recording.
+If the phone already began receiving that recording, the retry stays with the
+original project. After restarting the phone or turning Bluetooth off, reopen
+**Watch recordings** and select the watch to resume receiving.
+Audio travels directly between the paired devices.
+
 ## Home-screen widget, shortcuts, and floating microphone
 
-Create a project and grant microphone access in Fieldnote first. New home-screen
-recordings use the **most recently created project**, which may differ from the
-project you last opened. The Recorder widget stops current audio when tapped
-while recording; the shortcuts reuse its project and entry instead of starting
-a duplicate.
+Open a project and grant microphone access in Fieldnote first. New **Recorder
+widget** recordings use the project currently selected in Fieldnote. The
+destination is fixed when you tap to start; opening another project while it
+records does not move that recording. The separate **Record now** and **Floating
+mic** shortcuts use the most recently created project for a new recording.
+The Recorder widget stops current audio when tapped while recording; the shortcuts
+reuse its project and entry instead of starting a duplicate.
 
 In **Settings**, choose:
 
@@ -326,10 +374,11 @@ producing usable media.
 ## Validation limits
 
 Floating microphone recording and camera capture over the launcher have been
-exercised on an Android API 36 emulator. See the
-[validation summary](../docs/VALIDATION.md) for recorded build and test evidence.
-Emulator checks do not establish physical Pixel/GrapheneOS behavior; testing on
-that phone is still pending. Motion trace tests and simulated callbacks do not
+exercised on an Android API 36 emulator. The Recorder widget and Bluetooth watch
+transfer have also been exercised on a physical Pixel 8 Pro and Galaxy Watch4
+Classic. See the [validation summary](../docs/VALIDATION.md) for the scope and
+limits of those checks. Other capture paths have not all been repeated on the
+physical phone. Motion trace tests and simulated callbacks do not
 establish real-world gesture detection or sensitivity; physical haptic feel also
 remains untested. Hardware, permission revocation, storage-provider availability,
 launcher behavior, and process interruption can affect capture and saving.

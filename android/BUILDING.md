@@ -25,6 +25,30 @@ JVM test results are under `app/build/test-results/testDebugUnitTest/`; the lint
 report is `app/build/reports/lint-results-release.html`. On a Unix-like shell,
 use `./gradlew` with the same tasks; the recorded release validation used Windows.
 
+## Wear OS companion
+
+Build the separate Wear OS app and check the shared Bluetooth framing with:
+
+```powershell
+.\gradlew.bat --no-daemon :app:assembleRelease :wear:assembleRelease :wear:lintRelease :watchlink:test
+```
+
+The unsigned watch APK is `wear/build/outputs/apk/release/wear-release-unsigned.apk`.
+The signing configuration below applies to both apps and produces
+`wear/build/outputs/apk/release/wear-release.apk` when configured. Both release
+variants are non-debuggable. `:wear:assembleDebug` builds a development APK.
+Install the signed release on the
+watch using [Wear OS wireless debugging](https://developer.android.com/training/wearables/get-started/debugging).
+Use `adb -s <watch-serial> install -r <path-to-Fieldnote-Voice-1.0.0.apk>`
+after connecting to the watch. The phone must have a Fieldnote build that
+supports watch reception. An existing phone installation needs an update signed
+with the same certificate. See the [watch setup](GUIDE.md#record-from-a-galaxy-watch).
+
+Use a real paired watch and phone to verify the hardware shortcut, microphone,
+and Bluetooth transfer with Wi-Fi off. Test with the phone locked. Then stop
+the receiver, record again, and use **Send saved** after re-enabling it. Confirm
+one playable audio entry per recording and the correct destination project.
+
 ## Native tests
 
 Use a dedicated test emulator. These tests install app/test packages and can
@@ -43,6 +67,9 @@ $env:ANDROID_SERIAL = '<your-test-emulator-serial>'
 Replace the serial placeholder with the dedicated target shown by `adb devices`.
 Instrumentation uses the debug variant. Results are written under
 `app/build/outputs/androidTest-results/connected/`.
+The watch recorder lifecycle suite uses `:wear:connectedDebugAndroidTest` on a
+dedicated API 30+ test device or emulator. It also installs and removes test
+packages; never run it against a watch with recordings you need to keep.
 
 ## Signing and installation
 

@@ -1,0 +1,63 @@
+plugins { id 'com.android.application' }
+
+def releaseSigning = [
+    storeFile: System.getenv('FIELDNOTE_KEYSTORE_PATH'),
+    storePassword: System.getenv('FIELDNOTE_KEYSTORE_PASSWORD'),
+    keyAlias: System.getenv('FIELDNOTE_KEY_ALIAS'),
+    keyPassword: System.getenv('FIELDNOTE_KEY_PASSWORD')
+]
+def signingFieldsPresent = releaseSigning.values().count { it != null && !it.isEmpty() }
+if (signingFieldsPresent != 0 && signingFieldsPresent != releaseSigning.size()) {
+    throw new GradleException('Set all four FIELDNOTE signing environment variables, or none.')
+}
+def useExistingBetaKey = providers.gradleProperty('fieldnoteUseExistingBetaKey').orNull == 'true'
+if (useExistingBetaKey && signingFieldsPresent != 0) {
+    throw new GradleException('Choose configured release signing or the existing beta key, not both.')
+}
+
+android {
+    namespace 'com.fieldnote.wear'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.fieldnote.wear'
+        minSdk 30
+        targetSdk 35
+        versionCode 2
+        versionName '1.0.0'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    signingConfigs {
+        if (signingFieldsPresent == releaseSigning.size()) {
+            release {
+                storeFile file(releaseSigning.storeFile)
+                storePassword releaseSigning.storePassword
+                keyAlias releaseSigning.keyAlias
+                keyPassword releaseSigning.keyPassword
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (signingFieldsPresent == releaseSigning.size()) {
+                signingConfig signingConfigs.release
+            } else if (useExistingBetaKey) {
+                if (!signingConfigs.debug.storeFile.isFile()) {
+                    throw new GradleException('The existing watch keystore is missing; refusing to generate a replacement release identity.')
+                }
+                signingConfig signingConfigs.debug
+            }
+        }
+    }
+    lint { abortOnError true }
+}
+
+dependencies {
+    implementation project(':watchlink')
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+}

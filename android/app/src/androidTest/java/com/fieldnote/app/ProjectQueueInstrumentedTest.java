@@ -10,6 +10,7 @@ import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.DocumentsContract;
+import android.util.AtomicFile;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -21,6 +22,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -55,6 +57,7 @@ public final class ProjectQueueInstrumentedTest {
     private ExecutorService captures;
     private final ConcurrentLinkedQueue<File> ownedPending = new ConcurrentLinkedQueue<>();
     private final List<Uri> ownedProjects = new ArrayList<>();
+    private final List<AtomicFile> ownedWatchReceipts = new ArrayList<>();
 
     @Before public void setUp() throws Exception {
         context = InstrumentationRegistry.getInstrumentation().getTargetContext();
@@ -100,6 +103,7 @@ public final class ProjectQueueInstrumentedTest {
             deleteOwnedPending(new File(file.getPath() + ".json.bak"));
             deleteOwnedPending(new File(file.getPath() + ".json.new"));
         }
+        for (AtomicFile receipt : ownedWatchReceipts) receipt.delete();
         for (Uri ownedProject : ownedProjects) {
             File parent = new File(context.getFilesDir(), "archive-publications").getCanonicalFile();
             File owned = new File(parent, sha256(ownedProject.toString().getBytes(StandardCharsets.UTF_8))).getCanonicalFile();
@@ -156,6 +160,97 @@ public final class ProjectQueueInstrumentedTest {
                 () -> !ProjectPublisher.snapshot().running);
         assertEquals(store.pendingCount(), ProjectPublisher.snapshot().pendingCount);
         assertEquals(store.retryablePendingCount(), ProjectPublisher.snapshot().finalizedCount);
+    }
+
+    @Test public void watchRecordingRetriesStayInTheInitiallySelectedProject() throws Exception {
+        Uri originalProject = createProject("Watch destination");
+        String clipId = ownWatchClip();
+        long start = System.currentTimeMillis();
+        long end = start + 150;
+        byte[] audio = watchFixtureAudio();
+        assertThrows(IOException.class, () -> WatchRecordingImporter.importRecording(context, clipId,
+                start, end, audio.length, new ByteArrayInputStream(audio, 0, audio.length / 2)));
+        assertFalse(watchPending(clipId).exists());
+
+        Uri nextProject = createProject("Project selected after disconnect");
+        assertEquals(nextProject, store.currentProject());
+        assertThrows(IOException.class, () -> WatchRecordingImporter.importRecording(context, clipId,
+                start, end + 1, audio.length, new ByteArrayInputStream(audio)));
+        assertFalse(watchPending(clipId).exists());
+        WatchRecordingImporter.importRecording(context, clipId, start, end, audio.length,
+                new ByteArrayInputStream(audio));
+        awaitWatchPublication(clipId);
+
+        WatchRecordingImporter.importRecording(context, clipId, start, end, audio.length,
+                new ByteArrayInputStream(audio));
+        byte[] altered = audio.clone();
+        altered[altered.length - 1] ^= 1;
+        assertThrows(IOException.class, () -> WatchRecordingImporter.importRecording(context, clipId,
+                start, end, altered.length, new ByteArrayInputStream(altered)));
+
+        JSONArray entries = store.readProject(originalProject).getJSONArray("entries");
+        assertEquals(1, entries.length());
+        JSONArray originals = entries.getJSONObject(0).getJSONArray("media");
+        assertEquals(1, originals.length());
+        JSONObject original = originals.getJSONObject(0);
+        assertEquals("wear-os", original.getJSONObject("metadata").getString("source"));
+        assertTrue(original.getJSONObject("metadata").getLong("encodedDurationMs") > 0);
+        assertEquals(Instant.ofEpochMilli(start).toString(), original.getString("startedAt"));
+        assertEquals(Instant.ofEpochMilli(end).toString(), original.getString("endedAt"));
+        assertArrayEquals(audio, readUri(store.mediaUri(originalProject, original.getString("path"))));
+        assertEquals(0, store.readProject(nextProject).getJSONArray("entries").length());
+    }
+
+    @Test public void watchRecordingRequiresASelectedProjectAndFinalizedAudio() throws Exception {
+        Uri destination = createProject("Reject invalid watch audio");
+        String clipId = ownWatchClip();
+        byte[] audio = watchFixtureAudio();
+        long start = System.currentTimeMillis();
+        long end = start + 150;
+        store.setCurrentProject(null);
+        assertThrows(IOException.class, () -> WatchRecordingImporter.importRecording(context, clipId,
+                start, end, audio.length, new ByteArrayInputStream(audio)));
+        assertFalse(watchPending(clipId).exists());
+
+        store.setCurrentProject(destination);
+        byte[] invalid = new byte[audio.length];
+        System.arraycopy(audio, 0, invalid, 0, 8); // Keep the ftyp header but omit the track and samples.
+        assertThrows(IOException.class, () -> WatchRecordingImporter.importRecording(context, clipId,
+                start, end, invalid.length, new ByteArrayInputStream(invalid)));
+        assertFalse(watchPending(clipId).exists());
+        assertEquals(0, store.pendingEntries(destination).length());
+        assertEquals(0, store.readProject(destination).getJSONArray("entries").length());
+
+        WatchRecordingImporter.importRecording(context, clipId, start, end, audio.length,
+                new ByteArrayInputStream(audio));
+        awaitWatchPublication(clipId);
+        assertEquals(1, store.readProject(destination).getJSONArray("entries").length());
+    }
+
+    @Test public void separateWatchRecordingsFollowTheProjectSelectedForEachTransfer() throws Exception {
+        Uri firstProject = createProject("First watch project");
+        String first = ownWatchClip();
+        String second = ownWatchClip();
+        String third = ownWatchClip();
+        byte[] audio = watchFixtureAudio();
+        long start = System.currentTimeMillis();
+        // Identical encoded bytes from distinct capture IDs still produce separate notes.
+        WatchRecordingImporter.importRecording(context, first, start, start + 150, audio.length,
+                new ByteArrayInputStream(audio));
+        WatchRecordingImporter.importRecording(context, second, start, start + 150, audio.length,
+                new ByteArrayInputStream(audio));
+        Uri secondProject = createProject("Second watch project");
+        WatchRecordingImporter.importRecording(context, third, start, start + 150, audio.length,
+                new ByteArrayInputStream(audio));
+        awaitWatchPublication(first, second, third);
+
+        JSONArray firstEntries = store.readProject(firstProject).getJSONArray("entries");
+        JSONArray secondEntries = store.readProject(secondProject).getJSONArray("entries");
+        assertEquals(2, firstEntries.length());
+        assertEquals(1, secondEntries.length());
+        assertEquals(1, entryById(firstEntries, "watch-" + first).getJSONArray("media").length());
+        assertEquals(1, entryById(firstEntries, "watch-" + second).getJSONArray("media").length());
+        assertEquals(1, entryById(secondEntries, "watch-" + third).getJSONArray("media").length());
     }
 
     @Test public void blockedZipAllowsConcurrentAudioPhotoAndVideoStagingWithoutLostLinks() throws Exception {
@@ -403,6 +498,35 @@ public final class ProjectQueueInstrumentedTest {
         Uri created = store.createProject(fixtureTree, name);
         ownedProjects.add(created);
         return created;
+    }
+
+    private String ownWatchClip() {
+        String clipId = UUID.randomUUID().toString();
+        ownedPending.add(watchPending(clipId));
+        ownedWatchReceipts.add(new AtomicFile(new File(context.getFilesDir(),
+                "watch-recording-receipts/" + clipId + ".json")));
+        return clipId;
+    }
+
+    private File watchPending(String clipId) {
+        return new File(context.getFilesDir(), "pending-captures/capture-watch-" + clipId + ".m4a");
+    }
+
+    private byte[] watchFixtureAudio() throws IOException {
+        // Generated AAC-LC silence: ffmpeg -f lavfi -i anullsrc=r=44100:cl=mono -t 0.15 -c:a aac.
+        return readAll(InstrumentationRegistry.getInstrumentation().getContext()
+                .getAssets().open("watch-aac-silence.m4a"));
+    }
+
+    private void awaitWatchPublication(String... clipIds) throws Exception {
+        awaitCondition("Every watch original must publish", 15_000L, () -> {
+            if (ProjectPublisher.snapshot().running) return false;
+            for (String clipId : clipIds) {
+                File pending = watchPending(clipId);
+                if (pending.exists() || new File(pending.getPath() + ".json").exists()) return false;
+            }
+            return true;
+        });
     }
 
     private QueuedCapture stageFixture(String entryId, String kind, long start, long end,

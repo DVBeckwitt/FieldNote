@@ -178,10 +178,10 @@ public final class DirectWidgetInstrumentedTest {
         }
     }
 
-    @Test public void foreignWidgetTogglesLatestProjectInPlaceAndReceivesLivePurpleState() throws Exception {
-        Uri previous = project;
-        project = createProject("Latest widget project");
-        store.setCurrentProject(previous);
+    @Test public void foreignWidgetTogglesCurrentProjectInPlaceAndReceivesLivePurpleState() throws Exception {
+        Uri latest = createProject("Latest widget project");
+        store.setCurrentProject(project);
+        assertEquals(latest, store.lastCreatedProject());
         launchHost();
         float x = hostState.get().getFloat("x"), y = hostState.get().getFloat("y");
         awaitIdleWidget();
@@ -205,7 +205,7 @@ public final class DirectWidgetInstrumentedTest {
         JSONObject entry = index.getJSONArray("entries").getJSONObject(0);
         assertEquals(started.entryId, entry.getString("id"));
         assertEquals(1, entry.getJSONArray("media").length());
-        assertEquals(0, store.readProject(previous).getJSONArray("entries").length());
+        assertEquals(0, store.readProject(latest).getJSONArray("entries").length());
         assertEncodedAudio(store.mediaUri(project, media(index, "audio").getString("path")));
         awaitIdleWidget();
         assertHomeScreenOnly();
@@ -242,25 +242,65 @@ public final class DirectWidgetInstrumentedTest {
         }
     }
 
-    @Test public void missingProjectShowsSetupNotificationWithoutOpeningMain() throws Exception {
-        assertTrue(bookmarks.edit().clear().commit());
-        launchHost();
-        tapWidget();
-        assertSetupOnly();
-    }
-
-    @Test public void malformedLatestProjectDoesNotFallBackToAnotherProject() throws Exception {
-        assertTrue(bookmarks.edit().putInt("last-created-project", 7).commit());
+    @Test public void missingCurrentProjectDoesNotFallBackToLatestOrOpenMain() throws Exception {
+        store.setCurrentProject(null);
+        assertEquals(project, store.lastCreatedProject());
         launchHost();
         tapWidget();
         assertSetupOnly();
         assertEquals(0, store.readProject(project).getJSONArray("entries").length());
     }
 
+    @Test public void malformedCurrentProjectDoesNotFallBackToLatest() throws Exception {
+        assertTrue(bookmarks.edit().putInt("current-project", 7).commit());
+        assertEquals(project, store.lastCreatedProject());
+        launchHost();
+        tapWidget();
+        assertSetupOnly();
+        assertEquals(0, store.readProject(project).getJSONArray("entries").length());
+    }
+
+    @Test public void widgetBindsProjectBeforeResolutionAndNextRecordingFollowsSelection() throws Exception {
+        Uri next = createProject("Next widget selection");
+        store.setCurrentProject(project);
+        launchHost();
+        synchronized (staticField(ProjectStore.class, "CACHE_LOCK")) {
+            tapWidget();
+            await("the tap binds its project before local index loading", 5_000,
+                    () -> RecordingService.snapshot().state == RecordingService.State.STARTING
+                            && project.equals(RecordingService.snapshot().projectUri));
+            store.setCurrentProject(next);
+        }
+        RecordingService.Snapshot first = awaitAudio();
+        assertEquals(project, first.projectUri);
+        awaitRecordingWidget();
+        tapWidget();
+        JSONObject firstIndex = awaitSaved(project);
+        assertEquals(1, firstIndex.getJSONArray("entries").length());
+        assertEquals(0, store.readProject(next).getJSONArray("entries").length());
+        assertEncodedAudio(store.mediaUri(project, media(firstIndex, "audio").getString("path")));
+        await("the first recorder finishes teardown", 10_000, () -> activeRecorder() == null);
+        awaitIdleWidget();
+        tapWidget();
+        RecordingService.Snapshot second = awaitAudio();
+        assertEquals(next, second.projectUri);
+        assertNotEquals(first.entryId, second.entryId);
+        // Selection changes during recording also leave the already bound original alone.
+        store.setCurrentProject(project);
+        awaitRecordingWidget();
+        tapWidget();
+        JSONObject nextIndex = awaitSaved(next);
+        assertEquals(1, nextIndex.getJSONArray("entries").length());
+        assertEquals(1, store.readProject(project).getJSONArray("entries").length());
+        assertEncodedAudio(store.mediaUri(next, media(nextIndex, "audio").getString("path")));
+        awaitIdleWidget();
+        assertHomeScreenOnly();
+    }
+
     @Test public void secondTapDuringProjectResolutionCancelsWithoutCreatingAnOriginal() throws Exception {
         launchHost();
         // Keep provider resolution pending without sleeping or delaying Android's main thread.
-        synchronized (staticField(ProjectStore.class, "PREF_LOCK")) {
+        synchronized (staticField(ProjectStore.class, "CACHE_LOCK")) {
             tapWidget();
             await("first tap reserves one locked start before project I/O", 5_000,
                     () -> RecordingService.snapshot().state == RecordingService.State.STARTING && RecordingService.snapshot().locked);
@@ -427,6 +467,11 @@ public final class DirectWidgetInstrumentedTest {
         StatusBarNotification notification = setupNotification();
         assertNotNull(notification.getNotification().contentIntent);
         if (Build.VERSION.SDK_INT >= 31) assertTrue(notification.getNotification().contentIntent.isActivity());
+        PendingIntent openFieldnote = PendingIntent.getActivity(context, 2005,
+                new Intent(context, MainActivity.class).setAction(Intent.ACTION_MAIN),
+                PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE);
+        assertNotNull("Setup opens Fieldnote without the latest-project Record now action", openFieldnote);
+        assertEquals(openFieldnote, notification.getNotification().contentIntent);
     }
 
     private StatusBarNotification setupNotification() {

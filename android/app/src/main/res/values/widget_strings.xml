@@ -1,5 +1,5 @@
 <resources>
-    <string name="widget_mic_description">Tap to record in your latest-created project.</string>
+    <string name="widget_mic_description">Tap to record in your current Fieldnote project.</string>
     <string name="widget_mic_starting">Starting recording. Tap to cancel.</string>
     <string name="widget_mic_recording">Recording. Tap to stop and save.</string>
     <string name="widget_mic_saving">Saving recording.</string>
