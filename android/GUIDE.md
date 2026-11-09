@@ -1,17 +1,20 @@
-# Fieldnote 1.0.0
+# Fieldnote user guide
 
-Android release (version code 26) for Android 8.0 and later.
-No Google services are needed; no network permission is requested.
+For Android 8.0 and later. The app runs offline without Google services or
+Android network permission.
 Root access is neither needed nor used.
 
 ## Install
 
-Download `Fieldnote-1.0.0.apk` from the [1.0.0 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v1.0.0).
-Transfer it to the phone and open it from Files. If prompted, allow that
-installer source to install apps, then complete installation. The published release
-retains the existing signing certificate; updates over earlier betas use the same
-certificate. Keep the existing app installed to preserve its permissions,
-settings, and any pending captures.
+For editable project folders, **Finish**, and automatic transcription, download
+`Fieldnote-1.1.0-beta.1.apk` from the
+[1.1.0 beta release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v1.1.0-beta.1).
+The [stable 1.0.0 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v1.0.0)
+also provides the Fieldnote Voice watch companion.
+Transfer the APK to the phone and open it from Files. If prompted, allow that
+installer source to install apps, then complete installation. The published
+release uses the same signing certificate as earlier betas. Keep the existing
+app installed to preserve its permissions, settings, and any pending captures.
 
 The **Recorder** widget starts and stops audio directly on the home screen.
 It replaces the older widget action that opened the floating control.
@@ -24,9 +27,10 @@ See [Building Fieldnote](BUILDING.md) to build or test from source.
 
 ## First project and recording
 
-1. Create a project and choose a writable parent folder in Android's picker.
-   The first location becomes the default; **Different folder** overrides it for
-   a new project. Fieldnote creates `<project-name>.zip` there.
+1. Tap **New project** in the top bar, enter a name, and choose a writable
+   parent folder in Android's picker. The first location becomes the default.
+   Choose **Different folder** to use another location. Fieldnote creates an
+   editable folder there for the project's files.
 2. On Record, hold the large microphone. Grant microphone access if requested,
    then hold again to record. Press feedback is haptic when system settings allow.
    Its purple recording glow shows when audio is active. Release to finalize a
@@ -60,10 +64,10 @@ See [Building Fieldnote](BUILDING.md) to build or test from source.
    downward swipes scroll the list normally. **Back to Record** and Android's
    system Back also return to Record.
 
-The recent note appears at the bottom of Record. Once published, tap it to open
-the entry or hold it to edit its name and text. Notes labeled **Adding to ZIP**
-are still pending and cannot be opened or edited until publication finishes.
-Tap a published entry in all notes to view photos and play audio/video inside the
+The recent note appears at the bottom of Record. Once saved, tap it to open
+the entry or hold it to edit its name and text. Wait for notes labeled
+**Saving to project…** before opening or editing them.
+Tap a saved entry in all notes to view photos and play audio/video inside the
 app; Metadata opens separately. Attaching media later preserves each original
 capture timestamp. Names and text are stored in the project's metadata index.
 
@@ -115,7 +119,7 @@ The watch app requires Wear OS 3 or newer. See [build and install commands](BUIL
    **Stop**, to send the recording. Fieldnote saves the original
    `.m4a` and its capture times as a new audio entry in the project open when the
    phone begins receiving it. Keep that project open until the watch shows it
-   was sent. The entry may briefly show **Adding to ZIP**.
+   was sent. Saving and transcription continue on the phone after the transfer.
 
 An active recording continues if you go Home, open another app, or let the watch
 display sleep. Allow notifications to use **Stop** from the recording notification.
@@ -254,15 +258,23 @@ Shake detection stops in the background, outside Record, while notes/settings or
 other dialogs are open, and while the floating microphone is shown. The floating
 microphone retains its touch controls; shaking does not operate the overlay.
 
-## Search, tags, and audio bookmarks
+## Search, transcripts, tags, and audio bookmarks
 
 Open all notes and type in Search to filter the current project immediately.
-Search matches names, note text, tags, and audio marker labels, ignoring case;
-every word you enter must appear somewhere in the entry. Use the horizontal tag
-chips for an exact tag match, **Markers only** for entries with audio bookmarks,
-or both alongside search. **Clear filters** resets them. Filters survive closing
-the panel and Android activity recreation, but are not retained across a full
-app relaunch. The recent-note card is never filtered.
+Search matches names, note text, transcripts, tags, and audio marker labels,
+ignoring case. Every word you enter must appear somewhere in the entry. Use the
+horizontal tag chips for an exact tag match, **Markers only** for entries with
+audio bookmarks, or both alongside search. **Clear filters** resets them.
+Filters survive closing the panel and Android activity recreation, but are not
+retained across a full app relaunch. The recent-note card is never filtered.
+
+After each new audio recording is saved, Fieldnote automatically transcribes it
+on the phone with the bundled Vosk English model. This includes recordings made
+in the app, through the widget or floating microphone, and on a paired watch.
+Open the audio entry to read or copy its transcript. Each audio clip shows its
+own transcript or status, including when it is waiting or no speech was detected.
+Transcription runs in the background. The original remains playable if
+recognition fails. Automatic transcription starts with new recordings.
 
 The text editor includes **Tags, separated by commas** for new and existing
 notes. Tags become lowercase, leading `#` characters are removed, and duplicates
@@ -280,32 +292,34 @@ while held, or simply tap it when narration is locked.
 A marker's time is an elapsed offset in that specific audio clip, measured with
 a monotonic clock so wall-clock changes do not shift it. The marker count, last-marker time, and
 haptic confirmation update after its durable local journal write succeeds.
-Markers join the audio's queued save to the same project ZIP after finalization;
-marking during capture does not rewrite the archive or modify the audio file.
+Markers join the audio's queued save to the project folder after finalization.
+Marking during capture only updates the local journal.
 
 Open an entry to see each audio clip's markers with their times and labels. Tap
 a marker to seek and play that clip. You can add one at the current playback
 position, rename its label, or delete it. A clip supports up to 1,000 markers;
 labels can contain up to 200 characters. Saved-clip marker edits update the
-project ZIP while preserving the audio original.
+project index while preserving the audio original.
 
 ## Storage and settings
 
-The project ZIP is the canonical saved record: `index.json` plus `media/` originals.
-All notes, attachments, name/text edits, tags, and finalized audio markers update
-this existing ZIP. Text and entry names live in `index.json`; media originals
-remain separate archive members.
-When the ZIP is up to date, copying it preserves all files and relationships; use
-**Open project ZIP** in Settings and the document picker to reopen it in Fieldnote.
-The folder button beside Settings offers **Open storage folder**, **Open project ZIP**
-in an external app, and **Share project ZIP**. The storage-folder action opens the
-folder originally granted to Fieldnote; for a nested import this can be an ancestor
-folder. A ZIP imported without folder access can still be opened directly, but its
-parent folder cannot be inferred. The external app receives temporary read access.
-If no compatible app is installed, Fieldnote explains that instead of opening a
-folder picker. Opening or sharing the ZIP is blocked during active capture or pending
-saves; try again after they finish. A hidden app database is not needed for a
-completed project; the app's cached verified index is derived from the archive.
+An editable project lives in a folder with `index.json` and `media/` originals.
+Captures and note edits update those files as you work. Choose a storage provider
+that supports creating and renaming files. The folder button beside Settings
+offers **Open storage folder** in a compatible file explorer.
+
+Tap **Finish** in the top bar, then choose **Finish and close** to package the
+current project into a portable ZIP in the chosen parent folder. Wait for
+captures, pending saves, and transcription to finish before exporting. After
+verifying the ZIP, Fieldnote closes the project and keeps the working folder on
+disk. The confirmation shows the ZIP location with **Open ZIP** and **Share ZIP**
+actions. Copy the finished ZIP to keep the originals, capture times, notes, and
+relationships together.
+
+Use **Import project ZIP** and Android's picker to reopen a finished ZIP for
+editing or new recordings. Fieldnote uses the default location for the editable
+folder or asks you to choose one. The source ZIP stays in place. Finishing a new
+edition saves a separate ZIP if the original name is already in use.
 
 In the portable index, `entries[].tags` is an array of normalized strings, and
 `entries[].media[].markers` belongs to each audio original. A marker contains
@@ -313,15 +327,15 @@ In the portable index, `entries[].tags` is an array of normalized strings, and
 `mediaId` matches the containing media object's `id`; `offsetMs` is the position
 in that clip in milliseconds. The label is optional; an empty label receives a
 display name in the app. Annotation timestamps do not replace media capture times.
+When present, `entries[].media[].transcript` belongs to a single audio original.
+It contains a `status` and, when complete, the recognized `text`.
 
 Finalized originals are first flushed to local storage with an atomic pending
-journal. A separate background publisher then rewrites and verifies the complete
-ZIP. One writer processes overlapping audio, photo, and video arrivals, so you
-can keep capturing while earlier originals are added. Pending recent/all-notes
-cards show **Adding to ZIP**; wait until publication completes before copying the
-ZIP outside the app. Recording markers first use the local journal described
-above. Larger projects take longer and need extra temporary phone storage, plus
-enough destination space for the enlarged archive.
+journal. A background publisher verifies the saved originals and the new project
+index. One writer processes overlapping audio, photo, and video arrivals, so you
+can keep capturing while earlier originals are added. Finishing larger projects
+takes longer and needs extra temporary phone storage and destination space for
+the ZIP.
 
 The publisher uses a separate in-process worker and Android's JobScheduler.
 Newly staged media permits one prompt publication attempt during another
@@ -330,16 +344,15 @@ A persisted job keeps pending saves recoverable across restarts;
 the normal `RECEIVE_BOOT_COMPLETED` permission keeps it scheduled after reboot.
 This uses no network, Google services, or root access.
 
-This beta allows up to 8 GiB per archive, 4 GiB per original, 10,000 archive members,
+Fieldnote allows up to 8 GiB per archive, 4 GiB per original, 10,000 archive members,
 and a 32 MiB metadata index. JSON also has ceilings of 64 nesting levels and
 250,000 tokens, counting property names, values, and container delimiters,
 including unknown metadata. Very complex previously accepted indexes can be
 rejected. A complexity failure preserves the source instead of treating it as
-corruption; legacy import will not substitute an older backup or create a ZIP
-from that stale index.
+corruption. Legacy import preserves the source when its index exceeds the limits.
 
-Project ZIPs hold original media and plaintext metadata, potentially including
-location. This beta does not encrypt them. App backup rules explicitly exclude
+Working folders and finished ZIPs hold original media and plaintext metadata,
+potentially including location and transcripts. App backup rules explicitly exclude
 private/app-specific data from legacy backup, cloud backup, and device transfer;
 these rules do not control your storage provider's sync, copies, or shared ZIPs.
 Private playback caches and pending recovery data remain intentionally available.
@@ -348,12 +361,13 @@ Behavior across every manufacturer's backup/transfer implementation is unverifie
 **Settings** changes the default save location, optional metadata, Shake to record,
 and dark navy/light-blue appearance, and offers the home-screen capture controls
 described above. The launcher uses the prototype's fₙ mark.
-Changing the default location does not move existing project ZIPs.
+Changing the default location applies to future projects. Existing working folders
+and finished ZIPs stay in their original locations.
 
-For beta 1 projects, use **Settings → Import an old project folder**. Conversion
-creates a ZIP and preserves the old folder. An already selected old project
-converts using the remembered default location; otherwise Fieldnote asks where to
-save its ZIP. The original folder remains available after conversion.
+For beta 1 projects, use **Settings → Import an old project folder**. Fieldnote
+copies the old folder to an editable project and preserves the source. On upgrade,
+Fieldnote opens an editable copy of the currently selected legacy project using
+the default location, or asks where to put the copy.
 
 Metadata collection is on by default. Grant location access through Settings if
 wanted; the switch does not bypass Android permissions. Values depend on granted
@@ -367,9 +381,9 @@ back off between attempts. Keep the app and its data installed and restore acces
 or space. **Settings → Retry pending saves** also retries in the background.
 If the storage provider fails to read an existing ZIP, Fieldnote preserves it.
 A provider read error does not trigger replacement of that ZIP from recovery data.
-“Saved” requires finalized media and a verified ZIP write; a queued capture is not
-yet in the portable ZIP. Very short or interrupted captures may fail instead of
-producing usable media.
+“Saved” requires finalized media and a verified project update. Wait for queued
+captures to be saved before finishing the project. Very short or interrupted
+captures may fail to produce usable media.
 
 ## Validation limits
 

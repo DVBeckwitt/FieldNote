@@ -29,11 +29,13 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -49,8 +51,11 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -86,6 +91,10 @@ public final class EntryViewer extends Dialog {
     public static final int MARKER_SAVE_ID = 0x00f10017;
     public static final int MARKER_DELETE_ID = 0x00f10018;
     public static final int MARKER_STATUS_ID = 0x00f10019;
+    static final int TRANSCRIPT_BODY_ID = 0x00f1001a;
+    static final int TRANSCRIPT_READ_ID = 0x00f1001b;
+    private static final int TRANSCRIPT_PREVIEW_CHARS = 1200;
+    private static final int TRANSCRIPT_SECTION_CHARS = 2400;
 
     private final Activity activity;
     private final ProjectStore store;
@@ -107,10 +116,37 @@ public final class EntryViewer extends Dialog {
     private boolean focusHeld;
     private AlertDialog metadataDialog;
     private AlertDialog markerDialog;
+    private AlertDialog transcriptDialog;
     private Runnable annotationsChanged;
 
     /** Called on the main thread after a verified edit, including edits finishing after dismissal. */
     public void setOnAnnotationsChangedListener(Runnable listener) { annotationsChanged = listener; }
+
+    /** Refreshes transcript fields from the host's verified snapshot without disturbing playback. */
+    void refreshTranscripts(Uri project, JSONObject updatedProject) {
+        if (!live() || !projectUri.equals(project) || updatedProject == null) return;
+        JSONArray entries = updatedProject.optJSONArray("entries");
+        if (entries == null) return;
+        for (int i = 0; i < entries.length(); i++) {
+            JSONObject updatedEntry = entries.optJSONObject(i);
+            if (updatedEntry == null || !entry.optString("id").equals(updatedEntry.optString("id"))) continue;
+            JSONArray updatedMedia = updatedEntry.optJSONArray("media");
+            if (updatedMedia == null) return;
+            Map<String, JSONObject> byId = new HashMap<>();
+            for (int m = 0; m < updatedMedia.length(); m++) {
+                JSONObject media = updatedMedia.optJSONObject(m);
+                if (media != null) byId.put(media.optString("id"), media);
+            }
+            for (MediaCard card : cards) {
+                JSONObject media = byId.get(card.media.optString("id"));
+                if (card.transcriptSection != null && media != null
+                        && card.media.optString("sha256").equals(media.optString("sha256"))) {
+                    card.renderTranscript(media.optJSONObject("transcript"));
+                }
+            }
+            return;
+        }
+    }
 
     public EntryViewer(Activity activity, ProjectStore store, Uri projectUri, JSONObject entry,
                        boolean dark, AttachmentListener callback) {
@@ -319,6 +355,7 @@ public final class EntryViewer extends Dialog {
                 metadataDialog = null;
             }
             if (markerDialog != null) { markerDialog.dismiss(); markerDialog = null; }
+            if (transcriptDialog != null) { transcriptDialog.dismiss(); transcriptDialog = null; }
             for (MediaCard card : cards) if (card.photo != null) card.photo.setImageDrawable(null);
             // Drop view references; Android may still draw a just-dismissed window for its exit animation.
             bitmaps.clear();
@@ -440,6 +477,11 @@ public final class EntryViewer extends Dialog {
         LinearLayout markerRows;
         Button addMarker;
         TextView markerStatus;
+        LinearLayout transcriptSection;
+        TextView transcriptBody;
+        Button readTranscript;
+        String transcriptState;
+        String transcriptText = "";
         Uri uri;
         MediaPlayer audio;
         boolean prepared;
@@ -554,6 +596,22 @@ public final class EntryViewer extends Dialog {
                 markers.addView(markerStatus);
                 layout.addView(markers);
                 renderMarkers();
+
+                transcriptSection = column();
+                TextView transcriptHeading = text("Transcript", 14, muted);
+                transcriptHeading.setTypeface(medium());
+                transcriptHeading.setPadding(0, dp(16), 0, dp(10));
+                transcriptSection.addView(transcriptHeading);
+                transcriptBody = text("", 15, ink);
+                transcriptBody.setId(TRANSCRIPT_BODY_ID);
+                transcriptBody.setLineSpacing(dp(4), 1);
+                transcriptSection.addView(transcriptBody);
+                readTranscript = quietButton("Read full transcript");
+                readTranscript.setId(TRANSCRIPT_READ_ID);
+                readTranscript.setOnClickListener(view -> showTranscript(transcriptText));
+                transcriptSection.addView(readTranscript, new LinearLayout.LayoutParams(-2, dp(48)));
+                layout.addView(transcriptSection);
+                renderTranscript(media.optJSONObject("transcript"));
             }
             Button metadata = quietButton("Capture metadata");
             metadata.setId(METADATA_BUTTON_ID);
@@ -563,6 +621,31 @@ public final class EntryViewer extends Dialog {
             metadataSpace.gravity = Gravity.END;
             metadataSpace.topMargin = dp(6);
             layout.addView(metadata, metadataSpace);
+        }
+
+        void renderTranscript(JSONObject transcript) {
+            String state = transcript == null ? "" : transcript.optString("status");
+            String body = "complete".equals(state) ? transcript.optString("text") : "";
+            if (state.equals(transcriptState) && body.equals(transcriptText)) return;
+            transcriptState = state;
+            transcriptText = body;
+            String display = switch (state) {
+                case "pending" -> "Waiting for transcription…";
+                case "complete" -> body;
+                case "no_speech" -> "No speech recognized.";
+                case "failed" -> "Transcription couldn’t finish. The audio is saved.";
+                default -> "";
+            };
+            transcriptSection.setVisibility(display.isEmpty() ? View.GONE : View.VISIBLE);
+            boolean hasText = !body.isEmpty();
+            boolean hasPreview = body.length() > TRANSCRIPT_PREVIEW_CHARS;
+            transcriptBody.setTextColor(hasText ? ink : muted);
+            transcriptBody.setTextIsSelectable(hasText);
+            transcriptBody.setAccessibilityLiveRegion(hasText ? View.ACCESSIBILITY_LIVE_REGION_NONE
+                    : View.ACCESSIBILITY_LIVE_REGION_POLITE);
+            transcriptBody.setText(hasPreview ? body.substring(0, transcriptSectionEnd(body, 0,
+                    TRANSCRIPT_PREVIEW_CHARS)) + "…" : display);
+            readTranscript.setVisibility(hasPreview ? View.VISIBLE : View.GONE);
         }
 
         void renderMarkers() {
@@ -927,7 +1010,53 @@ public final class EntryViewer extends Dialog {
     }
 
     private void showMetadata(JSONObject media) {
-        showMetadata("Capture metadata", media);
+        JSONObject details = new JSONObject();
+        for (Iterator<String> keys = media.keys(); keys.hasNext();) {
+            String key = keys.next();
+            if ("transcript".equals(key)) continue;
+            try { details.put(key, media.get(key)); }
+            catch (org.json.JSONException ignored) { /* Omit only fields that cannot be read. */ }
+        }
+        showMetadata("Capture metadata", details);
+    }
+
+    private void showTranscript(String transcript) {
+        if (transcriptDialog != null) transcriptDialog.dismiss();
+        List<String> sections = new ArrayList<>();
+        for (int start = 0; start < transcript.length();) {
+            int end = transcriptSectionEnd(transcript, start, TRANSCRIPT_SECTION_CHARS);
+            sections.add(transcript.substring(start, end));
+            start = end;
+        }
+        ListView textSections = new ListView(activity);
+        textSections.setDivider(null);
+        textSections.setItemsCanFocus(true);
+        textSections.setAdapter(new ArrayAdapter<String>(getContext(), android.R.layout.simple_list_item_1, sections) {
+            @Override public View getView(int position, View convertView, ViewGroup parent) {
+                TextView section = (TextView) convertView;
+                if (section == null) {
+                    section = text("", 16, ink);
+                    section.setTextIsSelectable(true);
+                    section.setLineSpacing(dp(4), 1);
+                    section.setPadding(dp(20), dp(8), dp(20), dp(8));
+                }
+                section.setText(getItem(position));
+                return section;
+            }
+        });
+        transcriptDialog = new AlertDialog.Builder(getContext()).setCustomTitle(dialogTitle("Transcript"))
+                .setView(textSections).setPositiveButton("Close", null).create();
+        transcriptDialog.show();
+        polishDialog(transcriptDialog);
+    }
+
+    private static int transcriptSectionEnd(String text, int start, int size) {
+        int end = Math.min(start + size, text.length());
+        if (end == text.length()) return end;
+        for (int i = end - 1; i >= start + size / 2; i--) {
+            if (Character.isWhitespace(text.charAt(i))) return i + 1;
+        }
+        return Character.isHighSurrogate(text.charAt(end - 1)) ? end - 1 : end;
     }
 
     private void showTextMetadata() {

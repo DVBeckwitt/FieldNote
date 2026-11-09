@@ -516,7 +516,7 @@ public final class DirectWidgetInstrumentedTest {
     }
 
     private Uri createProject(String name) throws Exception {
-        Uri created = store.createProject(fixtureTree, name); ownedProjects.add(created); return created;
+        Uri created = store.createWorkingProject(fixtureTree, name); ownedProjects.add(created); return created;
     }
 
     private JSONObject media(JSONObject index, String kind) throws Exception {

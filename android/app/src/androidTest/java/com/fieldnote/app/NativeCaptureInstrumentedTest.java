@@ -118,7 +118,7 @@ public final class NativeCaptureInstrumentedTest {
         Uri fixtureTree = DocumentsContract.buildTreeDocumentUri(TestDocumentsProvider.AUTHORITY,
                 "root:" + fixtureRoot.getName());
         store = new ProjectStore(context);
-        projectUri = store.createProject(fixtureTree, "Native capture integration");
+        projectUri = store.createWorkingProject(fixtureTree, "Native capture integration");
         store.setCurrentProject(projectUri);
     }
 
@@ -396,7 +396,153 @@ public final class NativeCaptureInstrumentedTest {
         assertFalse(RecordingService.isBusy());
     }
 
-    @Test public void headerFilesButtonOffersExternalFolderAndZipWithoutReplacingRecord() throws Exception {
+    @Test public void headerCreatesAndSelectsProjectUsingDefaultFolder() throws Exception {
+        Uri folder = DocumentsContract.buildTreeDocumentUri(projectUri.getAuthority(),
+                DocumentsContract.getTreeDocumentId(projectUri));
+        store.setDefaultFolder(folder);
+        notebook = ActivityScenario.launch(MainActivity.class);
+        awaitNotebookReady();
+        onNotebook(activity -> {
+            View action = activity.findViewById(R.id.new_project_button);
+            View selector = activity.findViewById(R.id.project_title);
+            assertTrue(action.isShown());
+            assertSame("Creation is reachable in the project header", selector.getParent(), action.getParent());
+            assertTrue(action.performClick());
+        });
+
+        String name = "Quick project";
+        Bundle input = new Bundle();
+        input.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, name);
+        AccessibilityServiceInfo info = instrumentation.getUiAutomation().getServiceInfo();
+        int previousFlags = info.flags;
+        info.flags |= AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS;
+        instrumentation.getUiAutomation().setServiceInfo(info);
+        try {
+            await("the create dialog accepts a name directly", 5_000, () -> performDialogAction(
+                    context.getPackageName() + ":id/project_name_input", AccessibilityNodeInfo.ACTION_SET_TEXT, input));
+            await("the create button uses the default folder", 5_000, () -> performDialogAction(
+                    "android:id/button1", AccessibilityNodeInfo.ACTION_CLICK, null));
+        } finally {
+            info.flags = previousFlags;
+            instrumentation.getUiAutomation().setServiceInfo(info);
+        }
+        await("the new project is selected in the header", 10_000, () -> {
+            AtomicBoolean selected = new AtomicBoolean();
+            onNotebook(activity -> {
+                TextView title = activity.findViewById(R.id.project_title);
+                selected.set(title.getText().toString().startsWith(name));
+            });
+            return selected.get();
+        });
+        Uri created = store.currentProject();
+        assertNotNull(created);
+        assertNotEquals(projectUri, created);
+        assertEquals(DocumentsContract.getTreeDocumentId(folder), DocumentsContract.getTreeDocumentId(created));
+        assertTrue(store.isWorkingProject(created));
+        assertFalse(store.isArchive(created));
+        assertEquals(0, projectArchives().length);
+        assertEquals(name, store.readProject(created).getString("name"));
+        assertCapturePageOnly();
+    }
+
+    @Test public void headerFinishCreatesArchiveAndClosesProject() throws Exception {
+        String text = "Record to archive only on Finish";
+        store.saveText(projectUri, UUID.randomUUID().toString(), text, new JSONObject(), new JSONArray());
+        store.setDefaultFolder(DocumentsContract.buildTreeDocumentUri(projectUri.getAuthority(),
+                DocumentsContract.getTreeDocumentId(projectUri)));
+        notebook = ActivityScenario.launch(MainActivity.class);
+        awaitNotebookReady();
+        assertEquals(0, projectArchives().length);
+        onNotebook(activity -> {
+            View action = activity.findViewById(R.id.finish_project_button);
+            assertTrue(action.isShown());
+            assertTrue(action.performClick());
+        });
+        assertEquals("Opening the confirmation keeps the project open", projectUri, store.currentProject());
+        assertEquals(0, projectArchives().length);
+
+        AccessibilityServiceInfo info = instrumentation.getUiAutomation().getServiceInfo();
+        int previousFlags = info.flags;
+        info.flags |= AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS;
+        instrumentation.getUiAutomation().setServiceInfo(info);
+        try {
+            await("the finish dialog accepts confirmation", 5_000, () -> performDialogAction(
+                    "android:id/button1", AccessibilityNodeInfo.ACTION_CLICK, null));
+            await("the archived project closes and its Finish action disappears", 15_000, () -> {
+                AtomicBoolean closed = new AtomicBoolean();
+                onNotebook(activity -> {
+                    TextView title = activity.findViewById(R.id.project_title);
+                    closed.set(title.getText().toString().startsWith("Choose project")
+                            && !activity.findViewById(R.id.finish_project_button).isShown());
+                });
+                return closed.get();
+            });
+            assertNull(store.currentProject());
+            assertFalse(store.isWorkingProject(projectUri));
+            await("the saved archive dialog can be dismissed", 5_000, () -> performDialogAction(
+                    "android:id/button1", AccessibilityNodeInfo.ACTION_CLICK, null));
+            onNotebook(activity -> assertTrue(activity.findViewById(R.id.project_title).performClick()));
+            await("the finished archive can be reopened from Projects", 5_000,
+                    () -> chooseFinishedProject("Native capture integration"));
+        } finally {
+            info.flags = previousFlags;
+            instrumentation.getUiAutomation().setServiceInfo(info);
+        }
+        awaitNotebookReady();
+        Uri reopened = store.currentProject();
+        assertTrue(store.isWorkingProject(reopened));
+        assertNotEquals(projectUri, reopened);
+        awaitRecentTitle(text);
+        longPressRecent();
+        String changed = "Edit after reopening";
+        onNoteDialog(dialog -> {
+            ((EditText) dialog.findViewById(R.id.note_text_input)).setText(changed);
+            assertTrue(dialog.findViewById(R.id.note_save).performClick());
+        });
+        await("the reopened copy accepts a note edit", 15_000,
+                () -> changed.equals(store.readProject(reopened).getJSONArray("entries").getJSONObject(0).optString("text")));
+        File[] archives = projectArchives();
+        assertEquals(1, archives.length);
+        JSONObject index = ProjectArchive.verify(archives[0]).index;
+        assertEquals(text, index.getJSONArray("entries").getJSONObject(0).getString("text"));
+    }
+
+    private boolean chooseFinishedProject(String name) {
+        AccessibilityNodeInfo root = instrumentation.getUiAutomation().getRootInActiveWindow();
+        if (root == null) return false;
+        try {
+            List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(name);
+            try {
+                for (AccessibilityNodeInfo node : nodes) {
+                    if (node.isVisibleToUser() && String.valueOf(node.getText()).startsWith(name + "  ·  ")
+                            && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
+                }
+                return false;
+            } finally { for (AccessibilityNodeInfo node : nodes) node.recycle(); }
+        } finally { root.recycle(); }
+    }
+
+    private File[] projectArchives() {
+        File[] archives = fixtureRoot.listFiles((directory, name) -> name.endsWith(".zip"));
+        assertNotNull(archives);
+        return archives;
+    }
+
+    private boolean performDialogAction(String viewId, int action, Bundle arguments) {
+        AccessibilityNodeInfo root = instrumentation.getUiAutomation().getRootInActiveWindow();
+        if (root == null) return false;
+        try {
+            List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(viewId);
+            try {
+                for (AccessibilityNodeInfo node : nodes) {
+                    if (node.isVisibleToUser() && node.performAction(action, arguments)) return true;
+                }
+                return false;
+            } finally { for (AccessibilityNodeInfo node : nodes) node.recycle(); }
+        } finally { root.recycle(); }
+    }
+
+    @Test public void headerFilesButtonOffersWorkingFolderWithoutReplacingRecord() throws Exception {
         notebook = ActivityScenario.launch(MainActivity.class);
         awaitNotebookReady();
         assertCapturePageOnly();
@@ -410,10 +556,7 @@ public final class NativeCaptureInstrumentedTest {
         instrumentation.addMonitor(monitor);
         try {
             openFilesDialog();
-            onFilesDialog(dialog -> {
-                assertTrue(dialog.findViewById(R.id.open_project_folder).isEnabled());
-                assertTrue(dialog.findViewById(R.id.open_project_zip).isEnabled());
-            });
+            onFilesDialog(dialog -> assertTrue(dialog.findViewById(R.id.open_project_folder).isEnabled()));
             saveScreenshot("project-file-choices.png");
             onFilesDialog(dialog -> assertTrue(dialog.findViewById(R.id.open_project_folder).performClick()));
             Intent folder = externalViewIntent(launched.get());
@@ -429,23 +572,10 @@ public final class NativeCaptureInstrumentedTest {
             assertEquals(tree, folder.getClipData().getItemAt(0).getUri());
             awaitRecordWindowFocus(true);
             assertCapturePageOnly();
-            launched.set(null);
-            openFilesDialog();
-            onFilesDialog(dialog -> assertTrue(dialog.findViewById(R.id.open_project_zip).performClick()));
-            Intent zip = externalViewIntent(launched.get());
-            assertEquals(Intent.ACTION_VIEW, zip.getAction());
-            assertEquals("application/zip", zip.getType());
-            assertEquals(projectUri, zip.getData());
-            assertEquals(Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                    zip.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION));
-            assertNotNull(zip.getClipData());
-            assertEquals(projectUri, zip.getClipData().getItemAt(0).getUri());
-            awaitRecordWindowFocus(true);
-            assertCapturePageOnly();
             assertEquals("File choices do not create another in-app page", Stage.RESUMED, notebookStage());
             assertFalse(RecordingService.isBusy());
             assertEquals(0, store.readProject(projectUri).getJSONArray("entries").length());
+            assertEquals(0, projectArchives().length);
         } finally { instrumentation.removeMonitor(monitor); }
     }
 
@@ -1391,7 +1521,7 @@ public final class NativeCaptureInstrumentedTest {
         assertTrue("Real encoded sample timestamps extend through the typing interval",
                 lastAudioSampleTimeMs(original) >= elapsedAtSubmit - 500);
         ProjectStore reopenedStore = new ProjectStore(context);
-        assertEquals("Text and audio remain in the original project ZIP", projectUri, reopenedStore.currentProject());
+        assertEquals("Text and audio remain in the original project folder", projectUri, reopenedStore.currentProject());
         JSONObject reopened = reopenedStore.readProject(projectUri).getJSONArray("entries").getJSONObject(0);
         assertEquals(ownedEntryId, reopened.getString("id"));
         assertEquals(text, reopened.getString("text"));
@@ -1566,7 +1696,7 @@ public final class NativeCaptureInstrumentedTest {
         assertTrue(inlineCameraIdle());
     }
 
-    @Test public void noteEditorsLockDuringZipSaveAndRecoverTheirDraftAfterFailure() throws Exception {
+    @Test public void noteEditorsLockDuringProjectSaveAndRecoverTheirDraftAfterFailure() throws Exception {
         String entryId = UUID.randomUUID().toString();
         store.saveText(projectUri, entryId, "Original note", new JSONObject(), new JSONArray().put("original"));
         notebook = ActivityScenario.launch(MainActivity.class);
@@ -1579,9 +1709,9 @@ public final class NativeCaptureInstrumentedTest {
             ((EditText) dialog.findViewById(R.id.note_text_input)).setText(savedText);
             ((EditText) dialog.findViewById(R.id.note_tags_input)).setText("calibration, bench");
         });
-        try (TestDocumentsProvider.WriteBarrier barrier = TestDocumentsProvider.blockNextZipWrite(projectUri)) {
+        try (TestDocumentsProvider.WriteBarrier barrier = TestDocumentsProvider.blockNextWorkingIndexWrite(projectUri)) {
             onNoteDialog(dialog -> assertTrue(dialog.findViewById(R.id.note_save).performClick()));
-            assertTrue("The save is held at the real project ZIP provider", barrier.awaitBlocked(10, TimeUnit.SECONDS));
+            assertTrue("The save is held at the real project index provider", barrier.awaitBlocked(10, TimeUnit.SECONDS));
             onNoteDialog(dialog -> {
                 assertNoteEditorEnabled(dialog, false);
                 assertEquals(savedTitle, ((EditText) dialog.findViewById(R.id.note_title_input)).getText().toString());
@@ -1603,14 +1733,14 @@ public final class NativeCaptureInstrumentedTest {
             ((EditText) dialog.findViewById(R.id.note_text_input)).setText(retryText);
             ((EditText) dialog.findViewById(R.id.note_tags_input)).setText("calibration, retry");
         });
-        try (TestDocumentsProvider.WriteBarrier barrier = TestDocumentsProvider.blockNextZipWrite(projectUri)) {
-            TestDocumentsProvider.failNextZipWriteAfterTruncate();
+        try (TestDocumentsProvider.WriteBarrier barrier = TestDocumentsProvider.blockNextWorkingIndexWrite(projectUri)) {
+            TestDocumentsProvider.failNextWorkingIndexWriteAfterTruncate(projectUri);
             onNoteDialog(dialog -> assertTrue(dialog.findViewById(R.id.note_save).performClick()));
-            assertTrue("The failing save also reaches the ZIP provider", barrier.awaitBlocked(10, TimeUnit.SECONDS));
+            assertTrue("The failing save also reaches the index provider", barrier.awaitBlocked(10, TimeUnit.SECONDS));
             onNoteDialog(dialog -> assertNoteEditorEnabled(dialog, false));
             assertFalse(barrier.timedOut());
         }
-        await("a failed ZIP write keeps the editor open for correction and retry", 15_000, () -> {
+        await("a failed index write keeps the editor open for correction and retry", 15_000, () -> {
             AtomicBoolean retryReady = new AtomicBoolean();
             onNotebook(activity -> {
                 AlertDialog dialog = (AlertDialog) readField(activity, "noteDialog");
@@ -1762,12 +1892,12 @@ public final class NativeCaptureInstrumentedTest {
         assertEncodedAudio(store.mediaUri(projectUri, audio.getString("path")));
     }
 
-    @Test public void aSecondMarkedRecordingCanStageWhileTheFirstZipPublicationIsBlocked() throws Exception {
+    @Test public void aSecondMarkedRecordingCanStageWhileTheFirstProjectSaveIsBlocked() throws Exception {
         notebook = ActivityScenario.launch(MainActivity.class);
         awaitNotebookReady();
         RecordingService.Snapshot first;
         RecordingService.Snapshot second;
-        TestDocumentsProvider.WriteBarrier barrier = TestDocumentsProvider.blockNextZipWrite(projectUri);
+        TestDocumentsProvider.WriteBarrier barrier = TestDocumentsProvider.blockNextWorkingIndexWrite(projectUri);
         try {
             onNotebook(this::beginRecordTouch);
             await("first original records before background publication", 15_000,
@@ -1775,8 +1905,8 @@ public final class NativeCaptureInstrumentedTest {
             first = RecordingService.snapshot();
             ownedEntryId = first.entryId;
             onNotebook(activity -> recordTouch.send(MotionEvent.ACTION_UP, 0, 0));
-            assertTrue("The first publication reaches the actual SAF ZIP write", barrier.awaitBlocked(10, TimeUnit.SECONDS));
-            await("the microphone becomes idle while the ZIP provider remains blocked", 10_000,
+            assertTrue("The first publication reaches the actual SAF index write", barrier.awaitBlocked(10, TimeUnit.SECONDS));
+            await("the microphone becomes idle while the index provider remains blocked", 10_000,
                     () -> recordingState(RecordingService.State.IDLE));
             assertTrue("Provider publication is still blocked before the next capture", barrier.isBlocked());
             assertEquals(1, store.retryablePendingCount());
@@ -1787,7 +1917,7 @@ public final class NativeCaptureInstrumentedTest {
                 assertTrue(activity.findViewById(R.id.record_button).isEnabled());
                 beginRecordTouch(activity);
             });
-            await("the next held microphone starts before the first ZIP write is released", 10_000,
+            await("the next held microphone starts before the first index write is released", 10_000,
                     () -> recordingState(RecordingService.State.RECORDING)
                             && !first.entryId.equals(RecordingService.snapshot().entryId)
                             && RecordingService.snapshot().elapsedMs() >= 1100);
@@ -1799,7 +1929,7 @@ public final class NativeCaptureInstrumentedTest {
                 assertHeldNarration(second);
                 recordTouch.send(MotionEvent.ACTION_UP, 90, -90);
             });
-            await("both originals finalize locally without waiting for the ZIP provider", 10_000,
+            await("both originals finalize locally without waiting for the index provider", 10_000,
                     () -> recordingState(RecordingService.State.IDLE) && store.retryablePendingCount() == 2);
             assertTrue("Both originals are staged before provider access is restored", barrier.isBlocked());
             assertFalse(barrier.timedOut());
@@ -1818,12 +1948,12 @@ public final class NativeCaptureInstrumentedTest {
             });
             assertTrue("Recreating the screen does not release or cancel the publisher", barrier.isBlocked());
             assertEquals("Both staged originals remain owned by the publication queue", 2, store.retryablePendingCount());
-            saveScreenshot("two-captures-awaiting-zip.png");
+            saveScreenshot("two-captures-awaiting-save.png");
         } finally {
             barrier.release();
         }
         assertFalse("The test released the barrier before its fail-safe timeout", barrier.timedOut());
-        await("both staged originals are added to the one ongoing project ZIP", 30_000,
+        await("both staged originals are added to the same working project", 30_000,
                 () -> !ProjectPublisher.snapshot().running
                         && mediaOfKind(store.readProject(projectUri), "audio").length() == 2);
         JSONObject firstEntry = readEntry(first.entryId);
@@ -1839,9 +1969,7 @@ public final class NativeCaptureInstrumentedTest {
         assertEquals(secondAudio.getString("id"), secondAudio.getJSONArray("markers").getJSONObject(0).getString("mediaId"));
         assertEncodedAudio(store.mediaUri(projectUri, firstAudio.getString("path")));
         assertEncodedAudio(store.mediaUri(projectUri, secondAudio.getString("path")));
-        File[] archives = fixtureRoot.listFiles((directory, name) -> name.toLowerCase(java.util.Locale.ROOT).endsWith(".zip"));
-        assertNotNull(archives);
-        assertEquals("Successive captures update one project archive", 1, archives.length);
+        assertEquals("Successive captures leave the working project unarchived", 0, projectArchives().length);
         assertEquals(0, store.retryablePendingCount());
     }
 
@@ -2031,7 +2159,7 @@ public final class NativeCaptureInstrumentedTest {
     }
 
     private void failMarkerSubmission(String label) throws Exception {
-        TestDocumentsProvider.failNextZipWriteAfterTruncate();
+        TestDocumentsProvider.failNextWorkingIndexWriteAfterTruncate(projectUri);
         onMarkerDialog(dialog -> {
             ((EditText) dialog.findViewById(EntryViewer.MARKER_LABEL_INPUT_ID)).setText(label);
             assertTrue(dialog.findViewById(EntryViewer.MARKER_SAVE_ID).performClick());
@@ -2111,7 +2239,6 @@ public final class NativeCaptureInstrumentedTest {
         openFilesDialog();
         onFilesDialog(dialog -> {
             assertTrue(dialog.findViewById(R.id.open_project_folder).isEnabled());
-            assertTrue(dialog.findViewById(R.id.open_project_zip).isEnabled());
             assertTrue(dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
         });
         onNotebook(activity -> {
@@ -3286,9 +3413,9 @@ public final class NativeCaptureInstrumentedTest {
         return matches.length() == 0 ? null : matches.getJSONObject(0);
     }
 
-    /** Recorder IDLE acknowledges local staging; only the archive proves publication. */
+    /** Recorder IDLE acknowledges local staging; read back the working project to verify its save. */
     private void awaitPublishedMedia(int audio, int photos, int videos) throws Exception {
-        await("staged originals appear in the ongoing project ZIP", 30_000, () -> {
+        await("staged originals appear in the working project", 30_000, () -> {
             JSONObject index = store.readProject(projectUri);
             return mediaOfKind(index, "audio").length() == audio
                     && mediaOfKind(index, "photo").length() == photos

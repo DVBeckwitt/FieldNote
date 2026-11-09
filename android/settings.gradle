@@ -3,7 +3,21 @@ pluginManagement {
 }
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories { google(); mavenCentral() }
+    repositories {
+        google()
+        mavenCentral()
+        exclusiveContent {
+            forRepository {
+                ivy {
+                    name = 'VoskModels'
+                    url = uri('https://alphacephei.com/vosk/models/')
+                    patternLayout { artifact '[artifact]-[revision].[ext]' }
+                    metadataSources { artifact() }
+                }
+            }
+            filter { includeModule('com.alphacephei.model', 'vosk-model-small-en-us') }
+        }
+    }
 }
 rootProject.name = 'Fieldnote'
 include ':app', ':wear', ':watchlink'

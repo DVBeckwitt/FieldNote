@@ -42,6 +42,7 @@
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/recording_widget_info" />
         </receiver>
         <service android:name=".ProjectPublisher" android:exported="true" android:permission="android.permission.BIND_JOB_SERVICE" />
+        <service android:name=".AudioTranscriptionJob" android:exported="true" android:permission="android.permission.BIND_JOB_SERVICE" />
         <provider android:name=".ArchiveMediaProvider" android:authorities="${applicationId}.media" android:exported="false" android:grantUriPermissions="true" />
     </application>
 </manifest>

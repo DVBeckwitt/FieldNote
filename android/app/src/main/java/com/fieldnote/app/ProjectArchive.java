@@ -197,6 +197,8 @@ public final class ProjectArchive {
         return members;
     }
 
+    static void validatePortableIndex(JSONObject index) throws IOException { inspectIndex(index); }
+
     /** Validates the index fields needed to bind archive members to original files. */
     private static Map<String, Media> inspectIndex(JSONObject index) throws IOException {
         try {
@@ -249,6 +251,7 @@ public final class ProjectArchive {
                     if (!(item.get("metadata") instanceof JSONObject)) throw new IOException("Media metadata must be a JSON object.");
                     requiredString(item, "status");
                     EntryAnnotations.validateMarkers(item);
+                    EntryAnnotations.validateTranscript(item);
                     result.put(path, new Media(path, bytes, hash, startedAt));
                 }
             }

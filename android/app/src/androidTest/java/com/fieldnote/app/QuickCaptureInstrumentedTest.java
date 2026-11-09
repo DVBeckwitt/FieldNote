@@ -326,13 +326,13 @@ public final class QuickCaptureInstrumentedTest {
         Uri older = createProject("Still accessible");
         Uri latest = createProject("Temporarily unavailable");
         store.setCurrentProject(older);
-        File archive = ownArchiveFile(latest);
-        byte[] original = Files.readAllBytes(archive.toPath());
+        File index = ownIndexFile(latest);
+        byte[] original = Files.readAllBytes(index.toPath());
         // Cached offline projects may intentionally stage new captures. Remove only
         // this fixture's verified cache to exercise actual destination resolution.
         clearOwnIndexCache(latest);
         assertNull(store.readCachedProject(latest));
-        assertTrue(archive.delete());
+        assertTrue(index.delete());
         try {
             launch(RecordingShortcuts.recordIntent(context));
             awaitSettled();
@@ -340,7 +340,7 @@ public final class QuickCaptureInstrumentedTest {
             assertEquals(latest, store.lastCreatedProject());
             assertEquals(older, store.currentProject());
             assertEquals(0, audioCount(store.readProject(older)));
-        } finally { Files.write(archive.toPath(), original); }
+        } finally { Files.write(index.toPath(), original); }
         MainActivity before = activity;
         onMain(before::recreate);
         await("Main returns after access is restored", 15_000,
@@ -350,20 +350,20 @@ public final class QuickCaptureInstrumentedTest {
         assertEquals(0, audioCount(store.readProject(latest)));
     }
 
-    @Test public void blockedZipPublicationAllowsAnotherQuickLockedRecording() throws Exception {
-        Uri project = createProject("Record while previous ZIP is busy");
+    @Test public void blockedFolderPublicationAllowsAnotherQuickLockedRecording() throws Exception {
+        Uri project = createProject("Record while previous save is busy");
         launch(RecordingShortcuts.recordIntent(context));
         RecordingService.Snapshot first = awaitLockedRecording();
         awaitRecordableDuration();
-        try (TestDocumentsProvider.WriteBarrier barrier = TestDocumentsProvider.blockNextZipWrite(project)) {
+        try (TestDocumentsProvider.WriteBarrier barrier = TestDocumentsProvider.blockNextWorkingIndexWrite(project)) {
             onMain(() -> RecordingService.stop(context));
             assertTrue("First publication reaches the intentionally blocked provider",
                     barrier.awaitBlocked(10, TimeUnit.SECONDS));
-            await("first microphone is released before ZIP completion", 10_000,
+            await("first microphone is released before the index write completes", 10_000,
                     () -> RecordingService.snapshot().state == RecordingService.State.IDLE);
             launchRecordAndAwaitDelivery();
             RecordingService.Snapshot second = awaitLockedRecording();
-            assertTrue("Second recording starts while the first ZIP write is still blocked", barrier.isBlocked());
+            assertTrue("Second recording starts while the first index write is still blocked", barrier.isBlocked());
             assertFalse(barrier.timedOut());
             assertEquals(project, second.projectUri);
             assertNotEquals(first.entryId, second.entryId);
@@ -375,12 +375,12 @@ public final class QuickCaptureInstrumentedTest {
     }
 
     @Test public void coldCachedQuickRequestSurvivesIdleTickerBeforeWindowFocus() throws Exception {
-        Uri project = createProject("Cold quick capture while ZIP is busy");
+        Uri project = createProject("Cold quick capture while save is busy");
         launch(RecordingShortcuts.recordIntent(context));
         RecordingService.Snapshot first = awaitLockedRecording();
         MainActivity previous = activity;
         awaitRecordableDuration();
-        try (TestDocumentsProvider.WriteBarrier barrier = TestDocumentsProvider.blockNextZipWrite(project)) {
+        try (TestDocumentsProvider.WriteBarrier barrier = TestDocumentsProvider.blockNextWorkingIndexWrite(project)) {
             onMain(() -> RecordingService.stop(context));
             assertTrue(barrier.awaitBlocked(10, TimeUnit.SECONDS));
             await("first microphone stages before the cold launch", 10_000,
@@ -425,14 +425,14 @@ public final class QuickCaptureInstrumentedTest {
                     setField(main, "observedState", null);
                     ((Runnable) readField(main, "ticker")).run();
                     assertEquals(RecordingService.State.IDLE, readField(main, "observedState"));
-                    assertFalse("The first idle tick must not replace the ready cached quick request with a blocked ZIP read",
+                    assertFalse("The first idle tick must not replace the ready cached quick request with a blocked project read",
                             (Boolean) readField(main, "projectLoading"));
                     assertFalse(RecordingService.isBusy());
                     main.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
                 });
                 await("cold Main receives focus after the controlled ordering", 5_000, this::isFocused);
                 RecordingService.Snapshot second = awaitLockedRecording();
-                assertTrue("Cold quick capture starts before the prior ZIP write is released", barrier.isBlocked());
+                assertTrue("Cold quick capture starts before the prior index write is released", barrier.isBlocked());
                 assertFalse(barrier.timedOut());
                 assertEquals(project, second.projectUri);
                 assertNotEquals(first.entryId, second.entryId);
@@ -456,7 +456,7 @@ public final class QuickCaptureInstrumentedTest {
         launch(RecordingShortcuts.recordIntent(context));
         RecordingService.Snapshot first = awaitLockedRecording();
         awaitRecordableDuration();
-        try (TestDocumentsProvider.WriteBarrier barrier = TestDocumentsProvider.blockNextZipWrite(project)) {
+        try (TestDocumentsProvider.WriteBarrier barrier = TestDocumentsProvider.blockNextWorkingIndexWrite(project)) {
             onMain(() -> RecordingService.stop(context));
             assertTrue(barrier.awaitBlocked(10, TimeUnit.SECONDS));
             await("first recording stages", 10_000,
@@ -464,7 +464,7 @@ public final class QuickCaptureInstrumentedTest {
             clearOwnIndexCache(project);
             assertNull(store.readCachedProject(project));
             launchRecordAndAwaitDelivery();
-            await("quick resolver waits for uncached archive access", 5_000,
+            await("quick resolver waits for uncached project access", 5_000,
                     () -> mainBoolean("quickResolving"));
             MainActivity waiting = activity;
             onMain(() -> assertTrue(waiting.moveTaskToBack(true)));
@@ -472,7 +472,7 @@ public final class QuickCaptureInstrumentedTest {
                     () -> stageOf(waiting) == Stage.STOPPED);
             onMain(() -> assertEquals(0, ((Number) readField(waiting, "quickMode")).intValue()));
             barrier.release();
-            await("prior ZIP publication completes", 20_000, () -> !ProjectPublisher.snapshot().running);
+            await("prior folder publication completes", 20_000, () -> !ProjectPublisher.snapshot().running);
             launch(ordinaryIntent());
             awaitSettled();
             // Cancellation clears UI loading flags before the old read returns.
@@ -494,7 +494,7 @@ public final class QuickCaptureInstrumentedTest {
     }
 
     private Uri createProject(String name) throws Exception {
-        Uri project = store.createProject(fixtureTree, name);
+        Uri project = store.createWorkingProject(fixtureTree, name);
         ownedProjects.add(project);
         return project;
     }
@@ -620,7 +620,7 @@ public final class QuickCaptureInstrumentedTest {
         onMain(() -> RecordingService.stop(context));
         await("recording finalizes without an error", 20_000,
                 () -> RecordingService.snapshot().state == RecordingService.State.IDLE);
-        await("original is published into its ZIP", 30_000, () -> !ProjectPublisher.snapshot().running);
+        await("original is committed to its project", 30_000, () -> !ProjectPublisher.snapshot().running);
         verifySavedAudio(capture);
     }
 
@@ -767,14 +767,14 @@ public final class QuickCaptureInstrumentedTest {
         field.set(target, value);
     }
 
-    private File ownArchiveFile(Uri project) throws Exception {
+    private File ownIndexFile(Uri project) throws Exception {
         assertTrue(ownedProjects.contains(project));
         String prefix = "root:" + fixtureRoot.getName() + "/";
         String id = DocumentsContract.getDocumentId(project);
         assertTrue(id.startsWith(prefix));
-        File file = new File(fixtureRoot, id.substring(prefix.length())).getCanonicalFile();
-        assertEquals(fixtureRoot.getCanonicalFile(), file.getParentFile());
-        return file;
+        File folder = new File(fixtureRoot, id.substring(prefix.length())).getCanonicalFile();
+        assertEquals(fixtureRoot.getCanonicalFile(), folder.getParentFile());
+        return new File(folder, "index.json");
     }
 
     private void clearOwnIndexCache(Uri project) throws Exception {

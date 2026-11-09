@@ -8,8 +8,11 @@ is 17, minimum Android API is 26, and compile/target API is 35.
 Configure your SDK through Android Studio or `ANDROID_HOME`, and set `JAVA_HOME`
 to your selected JDK. Keep machine-specific `local.properties` out of version
 control. The first build needs access to the configured dependency repositories
-and the checksum-pinned Gradle distribution. Use `--offline` only after the
-required distribution and dependencies are cached.
+and the checksum-pinned Gradle distribution. The phone build resolves Vosk 0.3.75
+and its Java dependencies from Maven Central, downloads the pinned small English
+model from Alpha Cephei, and verifies its SHA-256 before packaging it in the APK.
+Use `--offline` once the Gradle distribution, dependencies, and model are cached.
+The installed phone app has the model it needs for offline transcription.
 
 ## Build, unit tests, and lint
 

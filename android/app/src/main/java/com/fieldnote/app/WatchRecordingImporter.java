@@ -33,7 +33,7 @@ final class WatchRecordingImporter {
 
     private WatchRecordingImporter() {}
 
-    /** Runs on a worker. A return means local durability. The ZIP publishes independently. */
+    /** Runs on a worker. A return means local durability. The project saves independently. */
     static void importRecording(Context context, String clipId, long startedAtMs, long endedAtMs,
                                 long byteCount, InputStream audio) throws IOException {
         UUID id = canonicalId(clipId);
@@ -58,6 +58,15 @@ final class WatchRecordingImporter {
                 if (project == null || !ContentResolver.SCHEME_CONTENT.equals(project.getScheme())) {
                     throw new IOException("Select a Fieldnote project on the phone first.");
                 }
+                if (receipt != null) verifyHeader(receipt, startedAtMs, endedAtMs, byteCount);
+                boolean accepted = receipt != null && receipt.getBoolean("accepted");
+                if (accepted && !store.hasPendingWatchRecording(id)) {
+                    if (!receipt.getString("fingerprint").equals(receive(null, audio, byteCount))) {
+                        throw new IOException("The watch reused a recording ID with different audio.");
+                    }
+                    return;
+                }
+                project = store.beginWatchTransfer(project, receipt == null);
                 if (receipt == null) {
                     // Bind before reading the body so even a partly received clip keeps
                     // its destination if the phone changes projects while disconnected.
@@ -65,11 +74,10 @@ final class WatchRecordingImporter {
                             .put("startedAtMs", startedAtMs).put("endedAtMs", endedAtMs)
                             .put("bytes", byteCount).put("accepted", false);
                     writeReceipt(receiptFile, receipt);
-                } else {
-                    verifyHeader(receipt, startedAtMs, endedAtMs, byteCount);
+                } else if (!project.toString().equals(receipt.getString("projectUri"))) {
+                    writeReceipt(receiptFile, receipt.put("projectUri", project.toString()));
                 }
 
-                boolean accepted = receipt.getBoolean("accepted");
                 String fingerprint = receive(accepted ? null : received, audio, byteCount);
                 if ((accepted || receipt.has("fingerprint")) && !receipt.getString("fingerprint").equals(fingerprint)) {
                     throw new IOException("The watch reused a recording ID with different audio.");
@@ -90,6 +98,7 @@ final class WatchRecordingImporter {
             } catch (JSONException failure) {
                 throw new IOException("The watch recording receipt is unreadable.", failure);
             } finally {
+                store.endWatchTransfer();
                 if (received.exists()) received.delete();
             }
         }

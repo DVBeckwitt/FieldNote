@@ -73,6 +73,22 @@ final class EntryAnnotations {
         validateMarkerArray((JSONArray) raw, requiredString(media, "id"), markerLimit(media));
     }
 
+    static void validateTranscript(JSONObject media) throws IOException {
+        if (!media.has("transcript")) return;
+        JSONObject transcript = media.optJSONObject("transcript");
+        if (!"audio".equals(media.opt("kind")) || transcript == null) {
+            throw new IOException("Only audio originals can have a transcript object.");
+        }
+        String status = requiredString(transcript, "status");
+        if ("complete".equals(status)) {
+            if (requiredString(transcript, "text").length() > OfflineTranscriber.MAX_TRANSCRIPT_CHARS) {
+                throw new IOException("The audio transcript exceeds the supported length.");
+            }
+        } else if (transcript.has("text") || !("pending".equals(status) || "no_speech".equals(status) || "failed".equals(status))) {
+            throw new IOException("The audio transcript has an invalid status or text.");
+        }
+    }
+
     /** A maximum of -1 permits still-recording offsets whose final duration is unknown. */
     static void validateMarkerArray(JSONArray markers, String mediaId, long maxOffsetMs) throws IOException {
         requireNonblank(mediaId, "mediaId");

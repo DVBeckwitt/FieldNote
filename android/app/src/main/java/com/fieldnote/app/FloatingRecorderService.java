@@ -231,10 +231,8 @@ public final class FloatingRecorderService extends Service {
             try {
                 Uri destination = boundProject != null ? boundProject : store.lastCreatedProject();
                 if (destination == null) throw new java.io.IOException("Create a project in Fieldnote, then tap the widget again.");
-                if (store.readCachedProject(destination) == null) {
-                    if (!store.isArchive(destination)) throw new java.io.IOException("Open and convert the latest project in Fieldnote first.");
-                    store.readProject(destination);
-                }
+                if (!store.isWorkingProject(destination)) throw new java.io.IOException("Open an editable project in Fieldnote first.");
+                if (store.readCachedProject(destination) == null) store.readProject(destination);
                 main.post(() -> {
                     if (destroyed || closing || generation != widgetGeneration) return;
                     widgetResolving = false;

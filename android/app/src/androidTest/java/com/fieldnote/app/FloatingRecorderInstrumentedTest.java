@@ -555,7 +555,21 @@ public final class FloatingRecorderInstrumentedTest {
             assertFalse(RecordingService.isBusy());
             SystemClock.sleep(50);
         } while (SystemClock.elapsedRealtime() < until);
-        assertEquals(index.toString(), store.readProject(project).toString());
+        JSONObject afterHide = store.readProject(project);
+        JSONObject originalAudio = mediaOfKind(index, "audio").getJSONObject(0);
+        JSONObject finalTranscript = mediaOfKind(afterHide, "audio").getJSONObject(0).getJSONObject("transcript");
+        JSONObject originalTranscript = originalAudio.getJSONObject("transcript");
+        if (!originalTranscript.toString().equals(finalTranscript.toString())) {
+            assertEquals("pending", originalTranscript.getString("status"));
+            String status = finalTranscript.getString("status");
+            assertTrue("complete".equals(status) || "no_speech".equals(status) || "failed".equals(status));
+            assertEquals(index.getLong("revision") + 1, afterHide.getLong("revision"));
+            originalAudio.put("transcript", finalTranscript);
+            index.put("revision", afterHide.getLong("revision"));
+            index.put("updatedAt", afterHide.getString("updatedAt"));
+        }
+        assertEquals("Only the original audio's scheduled transcript can change after Hide",
+                index.toString(), afterHide.toString());
     }
 
     @Test public void quickStandaloneVideoSwipeContinuesAfterReleaseAndSavesItsOwnAudioTrack() throws Exception {
@@ -584,7 +598,7 @@ public final class FloatingRecorderInstrumentedTest {
     }
 
     private Uri createProject(String name) throws IOException {
-        Uri created = store.createProject(fixtureTree, name);
+        Uri created = store.createWorkingProject(fixtureTree, name);
         ownedProjects.add(created);
         return created;
     }
@@ -739,7 +753,7 @@ public final class FloatingRecorderInstrumentedTest {
 
     private JSONObject awaitPublished(int audio, int photos, int videos) throws Exception {
         AtomicReference<JSONObject> saved = new AtomicReference<>();
-        await("the project ZIP contains " + audio + " audio, " + photos + " photo and " + videos + " video originals", 30_000, () -> {
+        await("the working project contains " + audio + " audio, " + photos + " photo and " + videos + " video originals", 30_000, () -> {
             JSONObject index = store.readProject(project);
             if (mediaOfKind(index, "audio").length() != audio || mediaOfKind(index, "photo").length() != photos
                     || mediaOfKind(index, "video").length() != videos) return false;

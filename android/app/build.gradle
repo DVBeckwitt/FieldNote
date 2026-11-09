@@ -24,8 +24,8 @@ android {
         applicationId 'com.fieldnote.app'
         minSdk 26
         targetSdk 35
-        versionCode 26
-        versionName '1.0.0'
+        versionCode 27
+        versionName '1.1.0-beta.1'
         resValue 'string', 'app_version_label', "Fieldnote ${versionName}"
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
@@ -58,11 +58,55 @@ android {
         }
     }
     lint { abortOnError true }
+    androidResources { noCompress += 'zip' }
+}
+
+configurations {
+    speechModel {
+        canBeConsumed = false
+        transitive = false
+    }
 }
 
 dependencies {
     implementation project(':watchlink')
+    implementation 'com.alphacephei:vosk-android:0.3.75'
+    speechModel 'com.alphacephei.model:vosk-model-small-en-us:0.15@zip'
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test:runner:1.6.2'
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+}
+
+abstract class StageSpeechModel extends DefaultTask {
+    @InputFiles
+    @PathSensitive(PathSensitivity.NONE)
+    abstract ConfigurableFileCollection getArchives()
+
+    @OutputDirectory
+    abstract DirectoryProperty getAssetsDirectory()
+
+    @TaskAction
+    void stage() {
+        def model = archives.singleFile
+        def digest = java.security.MessageDigest.getInstance('SHA-256')
+        new java.security.DigestInputStream(model.newInputStream(), digest).withCloseable {
+            it.transferTo(OutputStream.nullOutputStream())
+        }
+        if (digest.digest().encodeHex().toString() != '30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498') {
+            throw new GradleException('The downloaded Vosk speech model failed SHA-256 verification.')
+        }
+        def assets = assetsDirectory.get().asFile
+        java.nio.file.Files.createDirectories(assets.toPath())
+        java.nio.file.Files.copy(model.toPath(), new File(assets, 'offline-speech-model.zip').toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+    }
+}
+
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        def stageModel = tasks.register("stage${variant.name.capitalize()}SpeechModel", StageSpeechModel) {
+            archives.from(configurations.speechModel)
+        }
+        variant.sources.assets.addGeneratedSourceDirectory(stageModel) { it.assetsDirectory }
+    }
 }

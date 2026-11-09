@@ -8,9 +8,10 @@
     <item type="id" name="files_button" />
     <item type="id" name="files_dialog" />
     <item type="id" name="open_project_folder" />
-    <item type="id" name="open_project_zip" />
-    <item type="id" name="share_project_zip" />
     <item type="id" name="project_title" />
+    <item type="id" name="new_project_button" />
+    <item type="id" name="project_name_input" />
+    <item type="id" name="finish_project_button" />
     <item type="id" name="entry_list" />
     <item type="id" name="settings_button" />
     <item type="id" name="dark_mode_switch" />

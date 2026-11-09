@@ -163,7 +163,7 @@ public final class ProjectQueueInstrumentedTest {
     }
 
     @Test public void watchRecordingRetriesStayInTheInitiallySelectedProject() throws Exception {
-        Uri originalProject = createProject("Watch destination");
+        Uri originalProject = createWorkingProject("Watch destination");
         String clipId = ownWatchClip();
         long start = System.currentTimeMillis();
         long end = start + 150;
@@ -172,7 +172,7 @@ public final class ProjectQueueInstrumentedTest {
                 start, end, audio.length, new ByteArrayInputStream(audio, 0, audio.length / 2)));
         assertFalse(watchPending(clipId).exists());
 
-        Uri nextProject = createProject("Project selected after disconnect");
+        Uri nextProject = createWorkingProject("Project selected after disconnect");
         assertEquals(nextProject, store.currentProject());
         assertThrows(IOException.class, () -> WatchRecordingImporter.importRecording(context, clipId,
                 start, end + 1, audio.length, new ByteArrayInputStream(audio)));
@@ -202,7 +202,7 @@ public final class ProjectQueueInstrumentedTest {
     }
 
     @Test public void watchRecordingRequiresASelectedProjectAndFinalizedAudio() throws Exception {
-        Uri destination = createProject("Reject invalid watch audio");
+        Uri destination = createWorkingProject("Reject invalid watch audio");
         String clipId = ownWatchClip();
         byte[] audio = watchFixtureAudio();
         long start = System.currentTimeMillis();
@@ -228,7 +228,7 @@ public final class ProjectQueueInstrumentedTest {
     }
 
     @Test public void separateWatchRecordingsFollowTheProjectSelectedForEachTransfer() throws Exception {
-        Uri firstProject = createProject("First watch project");
+        Uri firstProject = createWorkingProject("First watch project");
         String first = ownWatchClip();
         String second = ownWatchClip();
         String third = ownWatchClip();
@@ -239,7 +239,7 @@ public final class ProjectQueueInstrumentedTest {
                 new ByteArrayInputStream(audio));
         WatchRecordingImporter.importRecording(context, second, start, start + 150, audio.length,
                 new ByteArrayInputStream(audio));
-        Uri secondProject = createProject("Second watch project");
+        Uri secondProject = createWorkingProject("Second watch project");
         WatchRecordingImporter.importRecording(context, third, start, start + 150, audio.length,
                 new ByteArrayInputStream(audio));
         awaitWatchPublication(first, second, third);
@@ -496,6 +496,12 @@ public final class ProjectQueueInstrumentedTest {
 
     private Uri createProject(String name) throws IOException {
         Uri created = store.createProject(fixtureTree, name);
+        ownedProjects.add(created);
+        return created;
+    }
+
+    private Uri createWorkingProject(String name) throws IOException {
+        Uri created = store.createWorkingProject(fixtureTree, name);
         ownedProjects.add(created);
         return created;
     }

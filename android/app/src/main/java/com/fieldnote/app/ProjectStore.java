@@ -42,7 +42,7 @@ import java.util.UUID;
 import java.util.zip.ZipFile;
 
 /**
- * A completed project's selected ZIP is the source of truth; bookmarks contain no media.
+ * Editable projects use uncompressed working folders. Finished ZIPs are portable snapshots.
  * SAF providers do not promise atomic replacement. Durable private previous/next archives
  * and a journal protect publication, and failed captures retain their original bytes.
  * A successful save requires a fresh read and full verification of the selected ZIP.
@@ -60,6 +60,13 @@ public final class ProjectStore {
     private static final String BACKUP = "index.backup.json";
     private static final String PENDING_INDEX = "index.pending.json";
     private static final String LAST_CREATED_PROJECT = "last-created-project";
+    private static final String WORKING = "working-project:";
+    private static final String CLOSED = "closed-project:";
+    private static final String EDITABLE_COPY = "editable-copy:";
+    private static final String WORKING_FLOW = "working-project-flow";
+    private static final Set<String> ACTIVE_CAPTURES = new HashSet<>();
+    private static Uri finishingProject;
+    private static Uri receivingWatchProject;
     private static final int JSON_LIMIT = 32 * 1024 * 1024;
     private static final DateTimeFormatter FILE_STAMP = DateTimeFormatter
             .ofPattern("yyyyMMdd'T'HHmmss.SSS'Z'", Locale.US).withZone(ZoneOffset.UTC);
@@ -68,8 +75,10 @@ public final class ProjectStore {
     private final SharedPreferences preferences;
     private final File pendingDirectory;
     private final File publicationsDirectory;
+    private final File workingEditsDirectory;
     private final File archiveWorkDirectory;
     private final File projectCacheDirectory;
+    private final WorkingProjectFiles workingFiles = new WorkingProjectFiles(this);
     private volatile String lastError = "";
 
     public ProjectStore(Context context) {
@@ -79,27 +88,168 @@ public final class ProjectStore {
         preferences = app.getSharedPreferences("fieldnote-folders", Context.MODE_PRIVATE);
         pendingDirectory = new File(app.getFilesDir(), "pending-captures");
         publicationsDirectory = new File(app.getFilesDir(), "archive-publications");
+        workingEditsDirectory = new File(app.getFilesDir(), "working-project-edits");
         archiveWorkDirectory = new File(app.getCacheDir(), "archive-work");
         projectCacheDirectory = new File(app.getCacheDir(), "project-index");
     }
 
-    /** Process-local notification hint; project ZIP contents remain authoritative. */
+    /** Process-local notification hint for durable project changes. */
     public static long publicationGeneration() { return publishedGeneration; }
 
-    /** New projects are one portable ZIP in the user-selected parent folder. */
+    /** Starts an editable project in the selected folder. */
+    public Uri createWorkingProject(Uri parent, String name) throws IOException {
+        synchronized (LOCK) {
+            try {
+                String clean = folderName(name);
+                JSONObject index = newProjectIndex(clean);
+                Uri directory = workingFiles.create(parent, clean, index, path -> {
+                    throw new IOException("An empty project has no originals.");
+                });
+                registerWorkingProject(directory, parent, null, true);
+                cacheVerifiedProject(directory, index);
+                return directory;
+            } catch (JSONException failure) { throw problem("Could not create the project folder", failure); }
+        }
+    }
+
+    /** Imports a verified snapshot as an editable folder, leaving the source untouched. */
+    public Uri importWorkingProject(Uri source, Uri parent) throws IOException {
+        synchronized (LOCK) {
+            Uri existing = preferenceUri(EDITABLE_COPY + source);
+            if (isWorkingProject(existing)) {
+                readProject(existing);
+                setCurrentProject(existing);
+                return existing;
+            }
+            ProjectArchive.Verified archive = null;
+            try {
+                Uri directory;
+                JSONObject index;
+                if (isArchive(source)) {
+                    if (hasPublication(publicationDirectory(source))) {
+                        throw new IOException("Retry the earlier ZIP save before importing this project.");
+                    }
+                    synchronized (CAPTURE_LOCK) { requireNoCaptureFor(source); }
+                    archive = readArchive(source, false);
+                    index = archive.index;
+                    try (ZipFile originals = new ZipFile(archive.file)) {
+                        directory = workingFiles.create(parent, folderName(index.getString("name")), index,
+                                path -> originals.getInputStream(originals.getEntry(path)));
+                    }
+                } else {
+                    synchronized (CAPTURE_LOCK) { requireNoCaptureFor(source); }
+                    index = readLegacyProject(source);
+                    directory = workingFiles.create(parent, folderName(index.getString("name")), index,
+                            path -> openInput(legacyMediaUri(source, path)));
+                }
+                // A copied project may contain a pending transcript from an earlier app
+                // session or a manually copied working snapshot.
+                queueProjectTranscripts(directory, index);
+                registerWorkingProject(directory, parent, source, false);
+                cacheVerifiedProject(directory, index);
+                return directory;
+            } catch (JSONException failure) { throw problem("Could not import this project", failure); }
+            finally { if (archive != null) deleteWorkFile(archive.file); }
+        }
+    }
+
+    public boolean isWorkingProject(Uri project) {
+        return project != null && preferences.contains(WORKING + project);
+    }
+
+    /** Verifies an exported ZIP before closing the working folder. The source remains on disk. */
+    public Uri finishWorkingProject(Uri project) throws IOException {
+        synchronized (LOCK) {
+            if (project == null) throw new IOException("Open a project before finishing it.");
+            Uri parent = preferenceUri(WORKING + project);
+            if (parent == null) {
+                Uri closed = preferenceUri(CLOSED + project);
+                if (closed != null) return closed;
+                throw new IOException("Open an editable project before finishing it.");
+            }
+            synchronized (CAPTURE_LOCK) {
+                requireNoCaptureFor(project);
+                if (project.equals(receivingWatchProject)) throw new IOException("Wait for the watch recording to arrive before finishing.");
+                finishingProject = project;
+            }
+            try {
+                completeWorkingEdit(project);
+                JSONObject index = workingFiles.read(project);
+                if (queueProjectTranscripts(project, index)) {
+                    throw new IOException("Wait for audio transcription to finish, then try again.");
+                }
+                Uri archive = finishArchive(parent, project, index);
+                synchronized (PREF_LOCK) {
+                    JSONArray bookmarks = new JSONArray();
+                    for (Uri saved : projects()) if (!project.equals(saved) && !archive.equals(saved)) bookmarks.put(saved.toString());
+                    bookmarks.put(archive.toString());
+                    SharedPreferences.Editor edit = preferences.edit().putString("projects", bookmarks.toString())
+                            .remove(WORKING + project).putString(CLOSED + project, archive.toString());
+                    if (project.equals(currentProject())) edit.remove("current-project");
+                    if (project.equals(preferenceUri(LAST_CREATED_PROJECT))) edit.remove(LAST_CREATED_PROJECT);
+                    if (!edit.commit()) throw new IOException("The ZIP was saved, but the project could not be closed. Try Finish again.");
+                }
+                return archive;
+            } catch (JSONException failure) { throw problem("Could not finish this project", failure); }
+            finally { synchronized (CAPTURE_LOCK) { finishingProject = null; } }
+        }
+    }
+
+    private void registerWorkingProject(Uri directory, Uri parent, Uri source, boolean created) throws IOException {
+        synchronized (PREF_LOCK) {
+            JSONArray bookmarks = new JSONArray();
+            for (Uri saved : projects()) if (!directory.equals(saved)) bookmarks.put(saved.toString());
+            bookmarks.put(directory.toString());
+            SharedPreferences.Editor edit = preferences.edit().putString("projects", bookmarks.toString())
+                    .putBoolean(WORKING_FLOW, true).putString(WORKING + directory, parent.toString())
+                    .putString("current-project", directory.toString());
+            if (source != null) edit.putString(EDITABLE_COPY + source, directory.toString());
+            Uri last = preferenceUri(LAST_CREATED_PROJECT);
+            if (created || !isWorkingProject(last)) {
+                edit.putString(LAST_CREATED_PROJECT, directory.toString());
+            }
+            if (!edit.commit()) throw new IOException("The editable project exists, but Fieldnote could not remember its location.");
+        }
+    }
+
+    private Uri finishArchive(Uri parentTree, Uri project, JSONObject index) throws IOException, JSONException {
+        Uri parent = directoryUri(parentTree);
+        String name = document(project).name;
+        Map<String, Document> existing = children(parent);
+        for (int number = 1; ; number++) {
+            String stem = number == 1 ? name : name + " (" + number + ")";
+            Document candidate = null;
+            for (Document item : existing.values()) {
+                if (zipName(stem).equalsIgnoreCase(item.name)) { candidate = item; break; }
+            }
+            if (candidate == null) {
+                return createArchive(parent, stem, index, path -> openInput(workingFiles.mediaUri(project, path)), "finish");
+            }
+            if (candidate.isDirectory()) continue;
+            // A process may have died after writing and verifying this same export.
+            completePublicationIfPresent(candidate.uri);
+            try {
+                ProjectArchive.Verified verified = readArchive(candidate.uri, false);
+                try { if (sameJson(index, verified.index)) return candidate.uri; }
+                finally { deleteWorkFile(verified.file); }
+            } catch (InvalidProjectArchiveException unrelated) { /* Preserve the existing file. */ }
+        }
+    }
+
+    private JSONObject newProjectIndex(String name) throws JSONException {
+        return new JSONObject().put("schemaVersion", 1).put("format", "fieldnote-project")
+                .put("id", UUID.randomUUID().toString()).put("name", name)
+                .put("createdAt", iso(System.currentTimeMillis())).put("revision", 0)
+                .put("timestampConvention", "ISO 8601 UTC; capture timezone and UTC offset are stored per media item when available.")
+                .put("entries", new JSONArray());
+    }
+
+    /** Compatibility path for legacy archive recovery and callers using the old format. */
     public Uri createProject(Uri parentTree, String name) throws IOException {
         synchronized (LOCK) {
             try {
                 String clean = folderName(name);
-                JSONObject index = new JSONObject();
-                index.put("schemaVersion", 1);
-                index.put("format", "fieldnote-project");
-                index.put("id", UUID.randomUUID().toString());
-                index.put("name", clean);
-                index.put("createdAt", iso(System.currentTimeMillis()));
-                index.put("revision", 0);
-                index.put("timestampConvention", "ISO 8601 UTC; capture timezone and UTC offset are stored per media item when available.");
-                index.put("entries", new JSONArray());
+                JSONObject index = newProjectIndex(clean);
                 Uri archive = createArchive(parentTree, clean, index, path -> {
                     throw new IOException("An empty project has no media members.");
                 }, "create");
@@ -159,6 +309,10 @@ public final class ProjectStore {
 
     public JSONObject readProject(Uri projectUri) throws IOException {
         synchronized (LOCK) {
+            if (isWorkingProject(projectUri)) {
+                try { return readWorkingIndex(projectUri); }
+                catch (JSONException failure) { throw problem("The editable project contains an invalid index", failure); }
+            }
             if (!isArchive(projectUri)) return readLegacyProject(projectUri);
             ProjectArchive.Verified archive = readArchive(projectUri, true);
             try {
@@ -271,6 +425,7 @@ public final class ProjectStore {
                 Uri latest = null;
                 Instant latestTime = null;
                 for (Uri project : bookmarked) {
+                    if (preferences.getBoolean(WORKING_FLOW, false) && !isWorkingProject(project)) continue;
                     Instant createdAt = projectCreationTime(project);
                     if (latest == null || createdAt.isAfter(latestTime)
                             || (createdAt.equals(latestTime) && project.toString().compareTo(latest.toString()) < 0)) {
@@ -299,6 +454,7 @@ public final class ProjectStore {
 
     /** Caller holds LOCK. Discovery must never repair or rewrite a bookmarked project. */
     private Instant projectCreationTime(Uri project) throws IOException, JSONException {
+        if (isWorkingProject(project)) return Instant.parse(readWorkingIndex(project).getString("createdAt"));
         if (!isArchive(project)) return Instant.parse(readLegacyProject(project).getString("createdAt"));
         ProjectArchive.Verified archive = readArchive(project, false);
         try { return Instant.parse(archive.index.getString("createdAt")); }
@@ -307,6 +463,7 @@ public final class ProjectStore {
 
     public void setCurrentProject(Uri projectUri) {
         synchronized (PREF_LOCK) {
+            if (projectUri != null && preferences.contains(CLOSED + projectUri)) return;
             if (projectUri != null) rememberProject(projectUri);
             setPreferenceUri("current-project", projectUri);
         }
@@ -322,6 +479,7 @@ public final class ProjectStore {
 
     public Uri mediaUri(Uri projectUri, String relativePath) throws IOException {
         synchronized (LOCK) {
+            if (isWorkingProject(projectUri)) return workingFiles.mediaUri(projectUri, relativePath);
             if (!isArchive(projectUri)) return legacyMediaUri(projectUri, relativePath);
             String filename = mediaFilename(relativePath);
             ProjectArchive.Verified archive = readArchive(projectUri, true);
@@ -402,13 +560,57 @@ public final class ProjectStore {
         return new File(pendingDirectory, "capture-watch-" + clipId + ".m4a");
     }
 
+    boolean hasPendingWatchRecording(UUID clipId) {
+        synchronized (CAPTURE_LOCK) { return watchRecordingFile(clipId).isFile(); }
+    }
+
+    Uri beginWatchTransfer(Uri project, boolean newReceipt) throws IOException {
+        synchronized (CAPTURE_LOCK) {
+            Uri archived = preferenceUri(CLOSED + project);
+            if (archived != null) {
+                Uri reopened = preferenceUri(EDITABLE_COPY + archived);
+                if (!isWorkingProject(reopened)) throw new IOException("Import the finished project on the phone before retrying this recording.");
+                project = reopened;
+            }
+            requireOpenForCapture(project);
+            if (newReceipt && !isWorkingProject(project)) throw new IOException("Open an editable project in Fieldnote before sending audio.");
+            receivingWatchProject = project;
+            return project;
+        }
+    }
+
+    void endWatchTransfer() {
+        synchronized (CAPTURE_LOCK) { receivingWatchProject = null; }
+    }
+
+    private void requireOpenForCapture(Uri project) throws IOException {
+        if (project != null && (project.equals(finishingProject) || preferences.contains(CLOSED + project))) {
+            throw new IOException("This project has been closed or is finishing. Open an editable project before recording.");
+        }
+    }
+
+    /** Caller holds CAPTURE_LOCK to serialize the check with new recordings. */
+    private void requireNoCaptureFor(Uri project) throws IOException {
+        for (File journal : journalFiles()) {
+            JSONObject record;
+            try { record = readCaptureJournalFile(journal); }
+            catch (JSONException failure) { throw problem("A pending recording could not be checked", failure); }
+            if (!project.toString().equals(record.optString("projectUri"))) continue;
+            if (record.optBoolean("finalized") || ACTIVE_CAPTURES.contains(record.optString("file"))) {
+                throw new IOException("Wait for this project's recordings and pending saves to finish first.");
+            }
+        }
+    }
+
     public void beginCapture(Uri project, String entryId, String kind, File file,
                              long startedAt, JSONObject metadata) throws IOException {
         synchronized (CAPTURE_LOCK) {
+            requireOpenForCapture(project);
             validateCapture(project, entryId, kind, file, startedAt, startedAt);
             try {
                 JSONObject record = journal(project, entryId, kind, file, startedAt, startedAt, metadata, "recording", false);
                 writeJournal(file, mergeCaptureJournal(file, record, false));
+                ACTIVE_CAPTURES.add(file.getName());
             } catch (JSONException failure) {
                 throw problem("Could not journal the recording before capture", failure);
             }
@@ -422,7 +624,7 @@ public final class ProjectStore {
     }
 
     /**
-     * Journals a marker without opening the project ZIP. RecordingService supplies the
+     * Journals a marker without opening the project. RecordingService supplies the
      * immutable monotonic offset and wall-clock time from the user's marker action.
      */
     public JSONObject addPendingAudioMarker(File file, String markerId, long offsetMs,
@@ -485,6 +687,7 @@ public final class ProjectStore {
         JSONObject summary;
         boolean newlyStaged;
         synchronized (CAPTURE_LOCK) {
+            requireOpenForCapture(project);
             validateCapture(project, entryId, kind, file, startedAt, endedAt);
             if (!file.isFile() || file.length() == 0) throw new IOException("The finalized capture is empty or missing. It was not queued.");
             try {
@@ -498,6 +701,7 @@ public final class ProjectStore {
                 try (FileOutputStream original = new FileOutputStream(file, true)) { original.getFD().sync(); }
                 if (newlyStaged) record.put("stagedAt", iso(System.currentTimeMillis()));
                 writeJournal(file, record);
+                ACTIVE_CAPTURES.remove(file.getName());
                 lastError = "";
             } catch (JSONException | RuntimeException failure) {
                 throw problem("The finalized capture could not be preserved in local pending storage", failure);
@@ -600,7 +804,7 @@ public final class ProjectStore {
                 atomic.finishWrite(output);
             } catch (IOException | RuntimeException ignored) {
                 if (atomic != null && output != null) atomic.failWrite(output);
-                // Cache failure never changes the validity of the selected project ZIP.
+                // Cache failure never changes the validity of the selected project.
             }
         }
     }
@@ -619,22 +823,32 @@ public final class ProjectStore {
             try {
                 JSONObject record;
                 synchronized (CAPTURE_LOCK) {
+                    requireOpenForCapture(project);
                     record = mergeCaptureJournal(file, journal(project, entryId, kind, file, startedAt, endedAt, metadata,
                             status == null ? "complete" : status, true), true);
                     // Markers accepted before this boundary are retained in the finalized
                     // journal. Active marker writes never wait for archive/provider I/O.
                     writeJournal(file, record);
                 }
-                Uri archiveUri = captureDestination(project);
-                completePublicationIfPresent(archiveUri);
-                previousArchive = readArchive(archiveUri, true);
-                JSONObject index = previousArchive.index;
+                Uri target = captureDestination(project);
+                boolean working = isWorkingProject(target);
+                JSONObject index;
+                if (working) {
+                    completeWorkingEdit(target);
+                    index = readWorkingIndex(target);
+                }
+                else {
+                    completePublicationIfPresent(target);
+                    previousArchive = readArchive(target, true);
+                    index = previousArchive.index;
+                }
                 JSONObject existing = findMedia(index, captureId(file));
                 if (existing != null) {
                     Digest expected = new Digest(existing.getLong("bytes"), existing.getString("sha256").toLowerCase(Locale.US));
                     if (file.isFile() && !expected.equals(digest(new FileInputStream(file)))) {
                         throw new IOException("This pending capture differs from the indexed original. Both copies were retained.");
                     }
+                    if (working) queueTranscript(target, index, existing);
                     clearPending(file);
                     lastError = "";
                     return copy(existing);
@@ -658,6 +872,7 @@ public final class ProjectStore {
                 media.put("sha256", source.hex);
                 media.put("status", record.getString("status"));
                 media.put("metadata", copy(metadata == null ? new JSONObject() : metadata));
+                if (working && "audio".equals(kind)) media.put("transcript", new JSONObject().put("status", "pending"));
                 if (record.has("markers")) {
                     media.put("markers", sortedMarkers(record.getJSONArray("markers")));
                     EntryAnnotations.validateMarkers(media);
@@ -679,21 +894,28 @@ public final class ProjectStore {
                 next.put("revision", index.optLong("revision", 0) + 1);
                 next.put("updatedAt", iso(System.currentTimeMillis()));
                 validateIndex(next);
-                nextFile = newWorkFile();
-                final String newPath = media.getString("path");
-                try (ZipFile oldZip = new ZipFile(previousArchive.file)) {
-                    ProjectArchive.Verified built = ProjectArchive.build(nextFile, next, path -> {
-                        if (newPath.equals(path)) return new FileInputStream(file);
-                        if (oldZip.getEntry(path) == null) throw new IOException("An indexed original is missing from the previous ZIP.");
-                        return oldZip.getInputStream(oldZip.getEntry(path));
-                    });
-                    publishArchive(archiveUri, built, previousArchive, "capture", captureId(file));
+                if (working) {
+                    ProjectArchive.validatePortableIndex(next);
+                    try (InputStream original = new FileInputStream(file)) { workingFiles.addOriginal(target, media, original); }
+                    publishIndexEdit(target, null, next);
+                    queueTranscript(target, next, media);
+                } else {
+                    nextFile = newWorkFile();
+                    final String newPath = media.getString("path");
+                    try (ZipFile oldZip = new ZipFile(previousArchive.file)) {
+                        ProjectArchive.Verified built = ProjectArchive.build(nextFile, next, path -> {
+                            if (newPath.equals(path)) return new FileInputStream(file);
+                            if (oldZip.getEntry(path) == null) throw new IOException("An indexed original is missing from the previous ZIP.");
+                            return oldZip.getInputStream(oldZip.getEntry(path));
+                        });
+                        publishArchive(target, built, previousArchive, "capture", captureId(file));
+                    }
                 }
                 clearPending(file);
                 lastError = "";
                 return media;
             } catch (JSONException | RuntimeException failure) {
-                throw problem("The capture is retained on this phone, but saving to the project ZIP failed", failure);
+                throw problem("The capture is retained on this phone, but saving to the project failed", failure);
             } catch (IOException failure) {
                 lastError = failure.getMessage();
                 throw failure;
@@ -702,6 +924,88 @@ public final class ProjectStore {
                 deleteWorkFile(nextFile);
             }
         }
+    }
+
+    private boolean queueTranscript(Uri project, JSONObject index, JSONObject media) throws IOException, JSONException {
+        JSONObject transcript = media.optJSONObject("transcript");
+        if (transcript != null && "pending".equals(transcript.optString("status"))) {
+            // Keep the capture journal until the transcript request is durable. A retry
+            // after process death follows the already-indexed capture branch above.
+            AudioTranscriptionJob.enqueue(appContext, project, index.getString("id"),
+                    media.getString("id"), media.getString("sha256"));
+            return true;
+        }
+        return false;
+    }
+
+    private boolean queueProjectTranscripts(Uri project, JSONObject index) throws IOException, JSONException {
+        boolean pending = false;
+        JSONArray entries = index.getJSONArray("entries");
+        for (int i = 0; i < entries.length(); i++) {
+            JSONArray media = entries.getJSONObject(i).getJSONArray("media");
+            for (int j = 0; j < media.length(); j++) pending |= queueTranscript(project, index, media.getJSONObject(j));
+        }
+        return pending;
+    }
+
+    private JSONObject readWorkingIndex(Uri project) throws IOException, JSONException {
+        JSONObject index = workingFiles.read(project);
+        cacheVerifiedProject(project, index);
+        return index;
+    }
+
+    /** Copies one verified clip under the project lock. Recognition runs outside it. */
+    boolean copyTranscriptInput(AudioTranscriptionJob.Request request, File output) throws IOException {
+        synchronized (LOCK) {
+            try {
+                if (!isWorkingProject(request.project)) return false;
+                JSONObject media = pendingTranscriptMedia(readWorkingIndex(request.project), request);
+                if (media == null) return false;
+                try (InputStream original = openInput(workingFiles.mediaUri(request.project, media.getString("path")));
+                     OutputStream target = new FileOutputStream(output)) {
+                    transferBounded(original, target, media.getLong("bytes"));
+                }
+                Digest actual = digest(new FileInputStream(output));
+                if (actual.bytes != media.getLong("bytes") || !request.sha256.equalsIgnoreCase(actual.hex)) {
+                    throw new IOException("The recording changed outside Fieldnote before it could be transcribed.");
+                }
+                return true;
+            } catch (JSONException failure) {
+                throw problem("The transcript's original could not be read", failure);
+            }
+        }
+    }
+
+    /** Merge into the latest working index, keeping edits made during recognition. */
+    void saveTranscript(AudioTranscriptionJob.Request request, JSONObject result) throws IOException {
+        synchronized (LOCK) {
+            try {
+                if (!isWorkingProject(request.project)) return;
+                completeWorkingEdit(request.project);
+                JSONObject next = readWorkingIndex(request.project);
+                JSONObject media = pendingTranscriptMedia(next, request);
+                if (media == null) return;
+                media.put("transcript", result);
+                next.put("revision", next.getLong("revision") + 1);
+                next.put("updatedAt", iso(System.currentTimeMillis()));
+                try { publishIndexEdit(request.project, null, next); }
+                catch (ProjectJson.LimitExceededException full) {
+                    media.put("transcript", new JSONObject().put("status", "failed"));
+                    publishIndexEdit(request.project, null, next);
+                }
+            } catch (JSONException failure) {
+                throw problem("The transcript could not be saved to the project", failure);
+            }
+        }
+    }
+
+    private JSONObject pendingTranscriptMedia(JSONObject index, AudioTranscriptionJob.Request request) throws JSONException {
+        if (!request.projectId.equals(index.getString("id"))) return null;
+        JSONObject media = findMedia(index, request.mediaId);
+        if (media == null || !"audio".equals(media.optString("kind"))
+                || !request.sha256.equalsIgnoreCase(media.optString("sha256"))) return null;
+        JSONObject transcript = media.optJSONObject("transcript");
+        return transcript != null && "pending".equals(transcript.optString("status")) ? media : null;
     }
 
     /**
@@ -760,9 +1064,17 @@ public final class ProjectStore {
             ProjectArchive.Verified previous = null;
             try {
                 Uri target = captureDestination(project);
-                completePublicationIfPresent(target);
-                previous = readArchive(target, true);
-                JSONObject next = copy(previous.index);
+                JSONObject next;
+                String workingBase = null;
+                if (isWorkingProject(target)) {
+                    completeWorkingEdit(target);
+                    next = readWorkingIndex(target);
+                    workingBase = indexDigest(next);
+                } else {
+                    completePublicationIfPresent(target);
+                    previous = readArchive(target, true);
+                    next = copy(previous.index);
+                }
                 JSONObject entry = findEntry(next, entryId);
                 boolean changed = false;
                 String now = iso(System.currentTimeMillis());
@@ -816,13 +1128,14 @@ public final class ProjectStore {
                     return copy(entry);
                 }
                 entry.put("updatedAt", now);
-                next.put("revision", previous.index.optLong("revision", 0) + 1);
+                next.put("revision", next.optLong("revision", 0) + 1);
                 next.put("updatedAt", now);
-                publishIndexEdit(target, previous, next);
+                if (workingBase != null) publishWorkingEdit(target, workingBase, next);
+                else publishIndexEdit(target, previous, next);
                 lastError = "";
                 return copy(entry);
             } catch (JSONException | RuntimeException failure) {
-                throw problem("The note could not be saved to the project ZIP", failure);
+                throw problem("The note could not be saved to the project", failure);
             } catch (IOException failure) {
                 lastError = failure.getMessage();
                 throw failure;
@@ -858,9 +1171,17 @@ public final class ProjectStore {
             ProjectArchive.Verified previous = null;
             try {
                 Uri target = captureDestination(project);
-                completePublicationIfPresent(target);
-                previous = readArchive(target, true);
-                JSONObject next = copy(previous.index);
+                JSONObject next;
+                String workingBase = null;
+                if (isWorkingProject(target)) {
+                    completeWorkingEdit(target);
+                    next = readWorkingIndex(target);
+                    workingBase = indexDigest(next);
+                } else {
+                    completePublicationIfPresent(target);
+                    previous = readArchive(target, true);
+                    next = copy(previous.index);
+                }
                 JSONObject entry = findEntry(next, entryId);
                 if (entry == null) throw new IOException("This entry no longer exists in the project.");
                 JSONObject audio = null;
@@ -902,13 +1223,14 @@ public final class ProjectStore {
                 else audio.put("markers", sortedMarkers(markers));
                 EntryAnnotations.validateMarkers(audio);
                 entry.put("updatedAt", now);
-                next.put("revision", previous.index.optLong("revision", 0) + 1);
+                next.put("revision", next.optLong("revision", 0) + 1);
                 next.put("updatedAt", now);
-                publishIndexEdit(target, previous, next);
+                if (workingBase != null) publishWorkingEdit(target, workingBase, next);
+                else publishIndexEdit(target, previous, next);
                 lastError = "";
                 return copy(result);
             } catch (JSONException | RuntimeException failure) {
-                throw problem("The audio marker could not be saved to the project ZIP", failure);
+                throw problem("The audio marker could not be saved to the project", failure);
             } catch (IOException failure) {
                 lastError = failure.getMessage();
                 throw failure;
@@ -950,6 +1272,12 @@ public final class ProjectStore {
     /** Rebuilds only the index; every existing original is streamed without modification. */
     private void publishIndexEdit(Uri target, ProjectArchive.Verified previous, JSONObject next) throws IOException, JSONException {
         validateIndex(next);
+        if (previous == null) {
+            workingFiles.writeIndex(target, next);
+            cacheVerifiedProject(target, next);
+            publishedGeneration++;
+            return;
+        }
         File work = newWorkFile();
         try (ZipFile originals = new ZipFile(previous.file)) {
             ProjectArchive.Verified built = ProjectArchive.build(work, next, path -> {
@@ -969,11 +1297,82 @@ public final class ProjectStore {
         return null;
     }
 
-    /** Retries durable ZIP edits and finalized captures; unfinished recorder output is retained. */
+    private File workingEditDirectory(Uri project) throws IOException {
+        return new File(workingEditsDirectory, digest(new java.io.ByteArrayInputStream(
+                project.toString().getBytes(StandardCharsets.UTF_8))).hex);
+    }
+
+    private static boolean hasWorkingEdit(File directory) {
+        return new File(directory, "edit.json").isFile() || new File(directory, "edit.json.bak").isFile();
+    }
+
+    private File[] workingEditDirectories() {
+        File[] directories = workingEditsDirectory.listFiles(file -> file.isDirectory() && hasWorkingEdit(file));
+        return directories == null ? new File[0] : directories;
+    }
+
+    private static String indexDigest(JSONObject index) throws IOException {
+        return digest(new java.io.ByteArrayInputStream(index.toString().getBytes(StandardCharsets.UTF_8))).hex;
+    }
+
+    /** Note and marker edits have no capture journal of their own. */
+    private void publishWorkingEdit(Uri target, String previousSha256, JSONObject next) throws IOException, JSONException {
+        byte[] encoded = workingFiles.encode(next);
+        File directory = workingEditDirectory(target);
+        if (hasWorkingEdit(directory)) throw new IOException("An earlier edit needs to be retried first.");
+        if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("There is no space to preserve the project edit.");
+        writeDurableBytes(new File(directory, "next.json"), encoded, "Could not preserve the edited project index");
+        writeAtomicJson(new File(directory, "edit.json"), new JSONObject().put("projectUri", target.toString())
+                .put("previousSha256", previousSha256).put("nextSha256", indexDigest(next)));
+        completeWorkingEdit(target);
+    }
+
+    private void completeWorkingEdit(Uri project) throws IOException, JSONException {
+        File directory = workingEditDirectory(project);
+        if (!hasWorkingEdit(directory)) return;
+        File marker = new File(directory, "edit.json");
+        JSONObject record = readLocalJson(marker);
+        if (!isWorkingProject(project) || !project.toString().equals(record.getString("projectUri"))) {
+            throw new IOException("The retained edit does not belong to this working project.");
+        }
+        File pending = new File(directory, "next.json");
+        JSONObject next = readLocalJson(pending);
+        String nextSha256 = record.getString("nextSha256");
+        if (!nextSha256.equals(indexDigest(next))) throw new IOException("The retained project edit failed verification.");
+        String currentSha256 = indexDigest(readWorkingIndex(project));
+        if (!nextSha256.equals(currentSha256)) {
+            if (!currentSha256.equals(record.getString("previousSha256"))) {
+                throw new IOException("The working project changed outside Fieldnote during a pending edit. Both copies were preserved.");
+            }
+            publishIndexEdit(project, null, next);
+        }
+        synchronized (CAPTURE_LOCK) {
+            new AtomicFile(marker).delete();
+            if (!hasWorkingEdit(directory)) {
+                new AtomicFile(pending).delete();
+                directory.delete();
+            }
+        }
+    }
+
+    /** Retries durable edits and finalized captures; unfinished recorder output is retained. */
     public int retryPending() throws IOException {
         synchronized (LOCK) {
             int saved = 0;
             IOException lastFailure = null;
+            for (File directory : workingEditDirectories()) {
+                checkInterrupted();
+                try {
+                    JSONObject edit = readLocalJson(new File(directory, "edit.json"));
+                    Uri target = Uri.parse(edit.getString("projectUri"));
+                    if (!directory.equals(workingEditDirectory(target))) throw new IOException("A working edit is stored under an unexpected location.");
+                    completeWorkingEdit(target);
+                    saved++;
+                } catch (IOException failure) { lastFailure = failure; }
+                catch (JSONException | RuntimeException failure) {
+                    lastFailure = problem("A working project edit is unreadable; recovery data was retained", failure);
+                }
+            }
             for (File directory : publicationDirectories()) {
                 checkInterrupted();
                 try {
@@ -982,8 +1381,10 @@ public final class ProjectStore {
                     if (!directory.equals(publicationDirectory(target))) throw new IOException("A ZIP recovery journal is stored under an unexpected location.");
                     boolean hasCaptureJournal = publicationHasCaptureJournal(publication);
                     completePublicationIfPresent(target);
-                    rememberProject(target);
-                    if (currentProject() == null) setCurrentProject(target);
+                    if (!"finish".equals(publication.optString("purpose"))) {
+                        rememberProject(target);
+                        if (currentProject() == null) setCurrentProject(target);
+                    }
                     if (!hasCaptureJournal) saved++;
                 } catch (IOException failure) { lastFailure = failure; }
                 catch (JSONException | RuntimeException failure) {
@@ -1070,6 +1471,7 @@ public final class ProjectStore {
     public void abandonCapture(File file, String reason) throws IOException {
         synchronized (CAPTURE_LOCK) {
             validatePendingFile(file);
+            ACTIVE_CAPTURES.remove(file.getName());
             if (!file.exists() || file.length() == 0) {
                 clearPending(file);
                 return;
@@ -1110,6 +1512,8 @@ public final class ProjectStore {
     }
 
     private Uri captureDestination(Uri original) throws IOException, JSONException {
+        requireOpenForCapture(original);
+        if (isWorkingProject(original)) return original;
         // Consult a completed migration route first: the preserved source folder can move
         // after conversion without stranding a beta.1 pending recording.
         JSONObject routes = new JSONObject(preferences.getString("legacy-archive-routes", "{}"));
@@ -1390,7 +1794,7 @@ public final class ProjectStore {
     }
 
     private int extraPublicationCount(boolean onlyRetryable) {
-        int count = 0;
+        int count = workingEditDirectories().length;
         for (File directory : publicationDirectories()) {
             try {
                 if (!publicationHasCaptureJournal(readLocalJson(new File(directory, "publication.json")))) count++;
@@ -1408,17 +1812,21 @@ public final class ProjectStore {
 
     private void writeAtomicJson(File file, JSONObject value) throws IOException, JSONException {
         synchronized (CAPTURE_LOCK) {
-            writeDurableJournal(file, value, "Could not preserve the ZIP recovery journal");
+            writeDurableJournal(file, value, "Could not preserve the project recovery journal");
         }
     }
 
     /** The caller owns journal synchronization and validates the destination. */
     private void writeDurableJournal(File file, JSONObject value, String failureMessage) throws IOException, JSONException {
+        writeDurableBytes(file, value.toString(2).getBytes(StandardCharsets.UTF_8), failureMessage);
+    }
+
+    private void writeDurableBytes(File file, byte[] bytes, String failureMessage) throws IOException {
         AtomicFile atomic = new AtomicFile(file);
         FileOutputStream output = null;
         try {
             output = atomic.startWrite();
-            output.write(value.toString(2).getBytes(StandardCharsets.UTF_8));
+            output.write(bytes);
             atomic.finishWrite(output);
         } catch (IOException | RuntimeException failure) {
             if (output != null) atomic.failWrite(output);
@@ -1426,7 +1834,7 @@ public final class ProjectStore {
         }
     }
 
-    private static void transferBounded(InputStream input, OutputStream output, long limit) throws IOException {
+    static void transferBounded(InputStream input, OutputStream output, long limit) throws IOException {
         byte[] buffer = new byte[64 * 1024];
         long total = 0;
         int count;
@@ -1490,7 +1898,7 @@ public final class ProjectStore {
         }
     }
 
-    private void validateIndex(JSONObject index) throws JSONException, IOException {
+    void validateIndex(JSONObject index) throws JSONException, IOException {
         if (index.optInt("schemaVersion", -1) != 1 || index.optString("id").isEmpty()
                 || index.optString("name").isEmpty() || index.optLong("revision", 0) < 0) {
             throw new IOException("This project has an unsupported or invalid index.");
@@ -1521,6 +1929,7 @@ public final class ProjectStore {
                 if (end < start || item.getLong("durationMs") != end - start) throw new IOException("A media item's capture times are inconsistent.");
                 item.getJSONObject("metadata");
                 EntryAnnotations.validateMarkers(item);
+                EntryAnnotations.validateTranscript(item);
             }
         }
     }
@@ -1537,7 +1946,7 @@ public final class ProjectStore {
         return null;
     }
 
-    private Uri directoryUri(Uri uri) throws IOException {
+    Uri directoryUri(Uri uri) throws IOException {
         if (uri == null || !"content".equals(uri.getScheme()) || !DocumentsContract.isTreeUri(uri)) {
             throw new IOException("Choose a folder using Android's folder picker.");
         }
@@ -1553,7 +1962,7 @@ public final class ProjectStore {
         }
     }
 
-    private Map<String, Document> children(Uri directory) throws IOException {
+    Map<String, Document> children(Uri directory) throws IOException {
         try {
             String id = DocumentsContract.getDocumentId(directory);
             Uri query = DocumentsContract.buildChildDocumentsUriUsingTree(directory, id);
@@ -1575,7 +1984,7 @@ public final class ProjectStore {
         }
     }
 
-    private Document document(Uri uri) throws IOException {
+    Document document(Uri uri) throws IOException {
         try (Cursor cursor = resolver.query(uri, new String[] {
                 DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                 DocumentsContract.Document.COLUMN_MIME_TYPE}, null, null, null)) {
@@ -1586,13 +1995,23 @@ public final class ProjectStore {
         }
     }
 
-    private Uri createDocument(Uri parent, String mimeType, String name) throws IOException {
+    Uri createDocument(Uri parent, String mimeType, String name) throws IOException {
         try {
             Uri created = DocumentsContract.createDocument(resolver, parent, mimeType, name);
             if (created == null) throw new IOException("The storage provider could not create " + name + ".");
             return DocumentsContract.buildDocumentUriUsingTree(parent, DocumentsContract.getDocumentId(created));
         } catch (RuntimeException failure) {
             throw problem("Cannot write to this folder. Check free space and folder permission", failure);
+        }
+    }
+
+    Uri renameDocument(Uri source, String name) throws IOException {
+        try {
+            Uri renamed = DocumentsContract.renameDocument(resolver, source, name);
+            if (renamed == null) throw new IOException("The storage provider could not finalize " + name + ".");
+            return DocumentsContract.buildDocumentUriUsingTree(source, DocumentsContract.getDocumentId(renamed));
+        } catch (RuntimeException failure) {
+            throw problem("This storage location could not finalize the original. Check its permission and available space", failure);
         }
     }
 
@@ -1612,7 +2031,7 @@ public final class ProjectStore {
         writeDurableJournal(journalFile(media), journal, "Could not preserve the pending capture journal");
     }
 
-    private InputStream openInput(Uri uri) throws IOException {
+    InputStream openInput(Uri uri) throws IOException {
         try {
             InputStream input = resolver.openInputStream(uri);
             if (input == null) throw new IOException("The storage provider could not open a file for reading.");
@@ -1620,7 +2039,7 @@ public final class ProjectStore {
         } catch (RuntimeException failure) { throw problem("Cannot read a project file", failure); }
     }
 
-    private OutputStream openOutput(Uri uri) throws IOException {
+    OutputStream openOutput(Uri uri) throws IOException {
         checkInterrupted();
         try {
             OutputStream output = resolver.openOutputStream(uri, "wt");
@@ -1633,7 +2052,7 @@ public final class ProjectStore {
         if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("ZIP publication was paused; durable originals and recovery files are retained.");
     }
 
-    private static byte[] readBytes(InputStream input) throws IOException {
+    static byte[] readBytes(InputStream input) throws IOException {
         try (InputStream owned = input; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[16 * 1024];
             int count;
@@ -1646,7 +2065,7 @@ public final class ProjectStore {
         }
     }
 
-    private static Digest digest(InputStream input) throws IOException {
+    static Digest digest(InputStream input) throws IOException {
         try (InputStream owned = input) {
             MessageDigest sha = MessageDigest.getInstance("SHA-256");
             byte[] buffer = new byte[64 * 1024];
@@ -1699,6 +2118,7 @@ public final class ProjectStore {
 
     private void clearPending(File media) {
         synchronized (CAPTURE_LOCK) {
+            ACTIVE_CAPTURES.remove(media.getName());
             // Destination and index have already been verified, or this capture is empty.
             if (media.exists() && !media.delete()) {
                 lastError = "The project is saved, but an extra temporary copy remains on this phone.";
@@ -1734,7 +2154,7 @@ public final class ProjectStore {
         return clean;
     }
 
-    private static String mediaFilename(String path) throws IOException {
+    static String mediaFilename(String path) throws IOException {
         if (path == null || !path.startsWith("media/")) throw new IOException("Media paths must be relative to the project's media folder.");
         String name = path.substring(6);
         if (name.isEmpty() || name.equals(".") || name.equals("..") || name.contains("/") || name.contains("\\")
@@ -1764,7 +2184,7 @@ public final class ProjectStore {
 
     private static JSONObject copy(JSONObject object) throws JSONException { return new JSONObject(object.toString()); }
 
-    private static final class Document {
+    static final class Document {
         final Uri uri;
         final String name;
         final String mime;
@@ -1772,7 +2192,7 @@ public final class ProjectStore {
         boolean isDirectory() { return DocumentsContract.Document.MIME_TYPE_DIR.equals(mime); }
     }
 
-    private static final class Digest {
+    static final class Digest {
         final long bytes;
         final String hex;
         Digest(long bytes, String hex) { this.bytes = bytes; this.hex = hex; }

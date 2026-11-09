@@ -157,12 +157,17 @@ final class NoteEntries {
         }
         StringBuilder haystack = new StringBuilder(entryLabel(entry)).append(' ').append(entry.optString("text"))
                 .append(' ').append(tagText(entry));
+        List<String> transcripts = new ArrayList<>();
         JSONArray media = entry.optJSONArray("media");
         if (media != null) {
             for (int i = 0; i < media.length(); i++) {
                 JSONObject clip = media.optJSONObject(i);
                 if (clip == null || !"audio".equals(clip.optString("kind"))) {
                     continue;
+                }
+                JSONObject transcript = clip.optJSONObject("transcript");
+                if (transcript != null && "complete".equals(transcript.optString("status"))) {
+                    transcripts.add(transcript.optString("text").toLowerCase(Locale.ROOT));
                 }
                 JSONArray markers = clip.optJSONArray("markers");
                 if (markers != null) {
@@ -177,7 +182,7 @@ final class NoteEntries {
         }
         String searchable = haystack.toString().toLowerCase(Locale.ROOT);
         for (String word : query.toLowerCase(Locale.ROOT).split("\\s+")) {
-            if (!searchable.contains(word)) {
+            if (!searchable.contains(word) && transcripts.stream().noneMatch(text -> text.contains(word))) {
                 return false;
             }
         }

@@ -1,3 +1,39 @@
+# 1.1.0-beta.1 validation
+
+Fieldnote **1.1.0-beta.1**, phone code **27**, was validated on 2026-11-09.
+The [GitHub prerelease](https://github.com/DVBeckwitt/FieldNote/releases/tag/v1.1.0-beta.1)
+provides the signed phone APK. The [stable 1.0.0 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v1.0.0)
+provides the compatible Fieldnote Voice watch APK.
+
+- All 160 phone and 4 watch instrumentation tests passed on a dedicated
+  Android 16/API 36 emulator. All 70 phone JVM, 3 watchlink JVM, and 7 Node 24
+  prototype tests passed. Prototype syntax and build checks passed.
+- Signed phone and watch release assembly passed with JDK 21, Gradle 8.14.6,
+  and Android SDK 35. Release lint found zero errors, 58 phone warnings,
+  one phone informational finding, and two watch warnings. All 107 Android
+  source and build inputs matched across signing and instrumentation.
+- An in-place signed update from the published 1.0.0 APK retained the microphone
+  grant and storage access. The previous ZIP opened as an editable working
+  folder. Its note could be edited and the source ZIP and AAC original kept
+  their SHA-256 hashes. A new recording through Android's storage provider
+  transcribed automatically and returned **No speech detected** for silence.
+  Finish exported both recordings and the edited note under a collision-safe
+  name. Both ZIPs passed CRC verification and FFmpeg decoded both originals.
+- The speech fixture verifies English text recognition, interruption and resume,
+  and transcript persistence in the exported ZIP alongside the exact audio bytes.
+
+The signed `Fieldnote-1.1.0-beta.1.apk` is **82,334,624 bytes**, with SHA-256
+`ea64525e0dc8c0cc0fec13af577eef3027e72ef60938cf1353c6757c4293af24`.
+It passes APK Signature Scheme v2 and 16 KiB alignment checks, uses the existing
+installation certificate `5145841e0feb89981109b16d0a9de86b8aa09a39b094b879d761c628faf0ab82`,
+and includes the checksum-verified offline English model. The APK is
+non-debuggable and requests no INTERNET permission.
+
+Fieldnote has no hosted CI workflows. These results cover local builds and an
+Android 16 emulator, including the system storage provider.
+
+---
+
 # 1.0.0 validation
 
 Fieldnote **1.0.0**, phone code **26** and Fieldnote Voice code **2**, was

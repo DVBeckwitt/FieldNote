@@ -427,10 +427,8 @@ public final class RecordingService extends Service {
         worker.post(() -> {
             try {
                 if (stopRequested || destroyed) { cancelBeforeRecording(); return; }
-                if (store.readCachedProject(destination) == null) {
-                    if (!store.isArchive(destination)) throw new IOException("Open and convert the selected project in Fieldnote first.");
-                    store.readProject(destination);
-                }
+                if (!store.isWorkingProject(destination)) throw new IOException("Open an editable project in Fieldnote first.");
+                if (store.readCachedProject(destination) == null) store.readProject(destination);
                 if (stopRequested || destroyed) { cancelBeforeRecording(); return; }
                 // Overlay state belongs to the main thread. Recheck after provider I/O.
                 main.post(() -> {

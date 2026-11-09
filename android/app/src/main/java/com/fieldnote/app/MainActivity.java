@@ -61,10 +61,10 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Native notebook UI. Completed projects live in the selected ZIP, not preferences. */
+/** Native notebook UI for working folders and finished project archives. */
 public class MainActivity extends Activity {
     private static final int PICK_CREATE = 40, PICK_DEFAULT = 41, PICK_IMPORT = 42,
-            PICK_LEGACY = 43, PICK_MIGRATION_DESTINATION = 44, PICK_OVERLAY = 45;
+            PICK_LEGACY = 43, PICK_IMPORT_DESTINATION = 44, PICK_OVERLAY = 45;
     private static final int PERMISSION_MIC = 50, PERMISSION_CAMERA = 51, PERMISSION_LOCATION = 52, PERMISSION_FLOATING = 53;
     private static final int PERMISSION_WATCH = 54;
     private static final long HOLD_DELAY_MS = 180;
@@ -86,7 +86,7 @@ public class MainActivity extends Activity {
     private LinearLayout root, entryList, capturePanel, capturePage, listPage, recentCard;
     private TextView projectTitle, recordStatus, recordTitle, recordHelp, attachNotice, countLabel;
     private TextView recentTitle, recentPreview;
-    private Button closeNotesButton, markerButton, markersFilter;
+    private Button closeNotesButton, markerButton, markersFilter, finishProjectButton;
     private EditText notesSearch;
     private LinearLayout searchControls, tagFilters;
     private String searchQuery = "", selectedTag = "", observedMarkerKey, observedMarkerError;
@@ -101,7 +101,7 @@ public class MainActivity extends Activity {
     private boolean renderEntriesAfterHold;
     private MotionCaptureControls motionControls;
     private android.window.OnBackInvokedCallback notesBackCallback;
-    private Uri legacyProject;
+    private Uri pendingImportSource, attemptedUpgrade;
     private EntryViewer entryViewer;
     private AlertDialog noteDialog;
     private AlertDialog settingsDialog;
@@ -155,6 +155,8 @@ public class MainActivity extends Activity {
             updateRecording();
             if (ProjectPublisher.ACTION_MEDIA_SAVED.equals(intent.getAction())) refreshProject();
             if (ProjectPublisher.ACTION_STATE.equals(intent.getAction())) refreshPendingEntries();
+            if (AudioTranscriptionJob.ACTION_TRANSCRIPT_UPDATED.equals(intent.getAction()) && projectUri != null
+                    && projectUri.toString().equals(intent.getStringExtra("projectUri"))) refreshPendingEntries();
         }
     };
     private final Runnable ticker = new Runnable() {
@@ -186,8 +188,10 @@ public class MainActivity extends Activity {
             searchQuery = savedInstanceState.getString("searchQuery", "");
             selectedTag = savedInstanceState.getString("selectedTag", "");
             markersOnly = savedInstanceState.getBoolean("markersOnly");
-            String legacy = savedInstanceState.getString("legacyProject");
-            if (legacy != null) legacyProject = Uri.parse(legacy);
+            String importSource = savedInstanceState.getString("pendingImportSource");
+            if (importSource != null) pendingImportSource = Uri.parse(importSource);
+            String upgrade = savedInstanceState.getString("attemptedUpgrade");
+            if (upgrade != null) attemptedUpgrade = Uri.parse(upgrade);
             restoredNote = savedInstanceState.getBundle("noteDraft");
             String pendingText = savedInstanceState.getString("pendingTextProject");
             if (pendingText != null) pendingTextProject = Uri.parse(pendingText);
@@ -267,17 +271,20 @@ public class MainActivity extends Activity {
             try {
                 Uri destination = boundProject != null ? boundProject : store.lastCreatedProject();
                 if (destination == null) throw new java.io.IOException("Create a project in Fieldnote, then use the home-screen control.");
-                // A verified local index lets capture start while its ZIP is being
-                // published or the provider is temporarily offline. Originals stage
-                // locally and publication still validates the external destination.
+                if (!store.isWorkingProject(destination))
+                    throw new java.io.IOException("Open an editable project in Fieldnote before using quick capture.");
+                // A cached index lets capture start while the provider is temporarily offline.
                 JSONObject loaded = store.readCachedProject(destination);
-                if (loaded == null) {
-                    if (!store.isArchive(destination)) throw new java.io.IOException("Open and convert the latest project in Fieldnote before using quick capture.");
-                    loaded = store.readProject(destination);
-                }
+                if (loaded == null) loaded = store.readProject(destination);
                 final JSONObject ready = loaded;
                 main.post(() -> {
                     if (destroyed || generation != quickGeneration || quickMode == QUICK_NONE) return;
+                    if (!store.isWorkingProject(destination)) {
+                        cancelQuickCapture();
+                        refreshProject();
+                        toast("Open an editable project in Fieldnote before using quick capture.");
+                        return;
+                    }
                     quickResolving = false;
                     projectLoading = false;
                     quickProject = destination;
@@ -418,7 +425,18 @@ public class MainActivity extends Activity {
         TextView brand = text("Fieldnote", 20, ink);
         brand.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         brand.setGravity(Gravity.CENTER_VERTICAL);
+        brand.setSingleLine(true);
+        brand.setEllipsize(android.text.TextUtils.TruncateAt.END);
         top.addView(brand, new LinearLayout.LayoutParams(0, dp(48), 1));
+        finishProjectButton = smallButton("Finish");
+        finishProjectButton.setId(R.id.finish_project_button);
+        finishProjectButton.setTextColor(accent);
+        finishProjectButton.setContentDescription("Finish project");
+        finishProjectButton.setVisibility(View.GONE);
+        finishProjectButton.setOnClickListener(v -> finishProjectDialog());
+        LinearLayout.LayoutParams finishSpace = new LinearLayout.LayoutParams(-2, dp(48));
+        finishSpace.setMarginEnd(dp(8));
+        top.addView(finishProjectButton, finishSpace);
         ImageButton files = new ImageButton(this);
         files.setId(R.id.files_button);
         files.setImageResource(R.drawable.ic_folder);
@@ -440,6 +458,8 @@ public class MainActivity extends Activity {
         settings.setOnClickListener(v -> settings());
         top.addView(settings, new LinearLayout.LayoutParams(dp(48), dp(48)));
         root.addView(top);
+        LinearLayout projectBar = row();
+        projectBar.setGravity(Gravity.CENTER_VERTICAL);
         projectTitle = text("Choose project  ⌄", 18, ink);
         projectTitle.setId(R.id.project_title);
         projectTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
@@ -451,7 +471,17 @@ public class MainActivity extends Activity {
         projectTitle.setBackground(touchSurface(panel, 18, border));
         projectTitle.setContentDescription("Choose project");
         projectTitle.setOnClickListener(v -> projects());
-        margin(projectTitle, 12, 10);
+        LinearLayout.LayoutParams projectSpace = new LinearLayout.LayoutParams(0, -2, 1);
+        projectSpace.setMarginEnd(dp(8));
+        projectBar.addView(projectTitle, projectSpace);
+        Button newProject = smallButton("New project");
+        newProject.setId(R.id.new_project_button);
+        newProject.setTextColor(accent);
+        newProject.setMinHeight(dp(52));
+        newProject.setMinimumHeight(dp(52));
+        newProject.setOnClickListener(v -> newProjectDialog());
+        projectBar.addView(newProject, new LinearLayout.LayoutParams(-2, -2));
+        margin(projectBar, 12, 10);
         attachNotice = text("", 12, accent);
         attachNotice.setPadding(dp(10), dp(8), dp(10), dp(8));
         attachNotice.setBackground(shape(panel, 8, border));
@@ -606,10 +636,10 @@ public class MainActivity extends Activity {
         notesSearch.setTextSize(15);
         notesSearch.setTextColor(ink);
         notesSearch.setHintTextColor(muted);
-        notesSearch.setHint("Search notes, tags, markers…");
+        notesSearch.setHint("Search notes and transcripts…");
         notesSearch.setBackground(shape(panel, 16, border));
         notesSearch.setPadding(dp(16), dp(10), dp(16), dp(10));
-        notesSearch.setContentDescription("Search notes, tags and audio markers");
+        notesSearch.setContentDescription("Search notes, transcripts, tags and audio markers");
         notesSearch.setInputType(InputType.TYPE_CLASS_TEXT);
         notesSearch.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
         notesSearch.setText(searchQuery);
@@ -929,7 +959,7 @@ public class MainActivity extends Activity {
         if (quickResolving) { toast("Opening the latest project…"); return false; }
         if (FloatingRecorderService.isShowing() && quickMode != QUICK_RECORD) { toast("Use the floating mic, or close it from its notification."); return false; }
         if (projectOperation || (projectLoading && project == null)) { toast("Opening project…"); return false; }
-        if (projectUri == null || project == null) { newProjectDialog(); return false; }
+        if (projectUri == null || project == null || !store.isWorkingProject(projectUri)) { newProjectDialog(); return false; }
         return true;
     }
 
@@ -1121,9 +1151,9 @@ public class MainActivity extends Activity {
             recordButton.setContentDescription("Video recording. Use Stop video in the camera preview to finish.");
         } else {
             recordStatus.setText(snapshot.state == RecordingService.State.ERROR ? "Capture needs attention"
-                    : publication.error != null && !publication.error.isEmpty() ? "ZIP needs attention · tap to retry"
-                    : publication.finalizedCount > 0 ? "Updating ZIP · " + publication.finalizedCount + " file(s) waiting"
-                    : publication.running ? "Verifying project ZIP…" : project == null ? "Choose a project to begin" : "Ready · project ZIP up to date");
+                    : publication.error != null && !publication.error.isEmpty() ? "Save needs attention · tap to retry"
+                    : publication.finalizedCount > 0 ? "Saving project · " + publication.finalizedCount + " file(s) waiting"
+                    : publication.running ? "Checking project saves…" : project == null ? "Choose a project to begin" : "Ready");
             recordTitle.setText("Hold to record");
             recordHelp.setText(shakeEnabled() ? "Shake to start / stop · ↗ adds a marker"
                     : "Slide ↗ to mark · return to center to repeat");
@@ -1293,43 +1323,41 @@ public class MainActivity extends Activity {
     }
 
     private void refreshProject() {
-        // Keep ordinary archive reads out of the entire quick-start handoff,
-        // including the interval after cached resolution but before focus/permission.
         if (destroyed || projectOperation || quickMode != QUICK_NONE) return;
         long generation = ++refreshGeneration;
-        Uri requested = projectUri;
-        if (requested == null) { projectLoading = false; project = null; renderEntries(); return; }
+        Uri requested = store.currentProject();
+        if (!java.util.Objects.equals(projectUri, requested)) {
+            projectUri = requested;
+            project = null;
+            nextEntryId = null;
+            updateAttachmentNotice();
+        }
+        if (requested == null || !store.isWorkingProject(requested)) {
+            projectLoading = false;
+            project = null;
+            refreshPendingEntries();
+            renderEntries();
+            if (requested != null && pendingImportSource == null && !requested.equals(attemptedUpgrade)) {
+                attemptedUpgrade = requested;
+                openProject(requested, store.defaultFolder());
+            }
+            return;
+        }
         refreshPendingEntries();
         projectLoading = true;
         io.execute(() -> {
             if (generation != refreshGeneration) return;
             try {
-                Uri opened = requested;
-                if (!store.isArchive(requested)) {
-                    Uri destination = store.defaultFolder();
-                    if (destination == null) {
-                        main.post(() -> {
-                            if (destroyed || generation != refreshGeneration) return;
-                            project = null;
-                            projectLoading = false;
-                            projectUri = null;
-                            legacyProject = requested;
-                            renderEntries();
-                            toast("Choose where to save the project ZIP.");
-                            chooseFolder(PICK_MIGRATION_DESTINATION);
-                        });
-                        return;
-                    }
-                    opened = store.importLegacyProject(requested, destination);
-                }
-                JSONObject loaded = store.readProject(opened);
-                Uri resolved = opened;
+                JSONObject loaded = store.readProject(requested);
                 main.post(() -> {
                     if (!destroyed && generation == refreshGeneration) {
-                        projectUri = resolved;
+                        if (!requested.equals(store.currentProject()) || !store.isWorkingProject(requested)) {
+                            refreshProject();
+                            return;
+                        }
                         projectLoading = false;
-                        store.setCurrentProject(resolved);
-                        project = loaded;
+                        if (project == null || loaded.optLong("revision") >= project.optLong("revision"))
+                            updateProjectIndex(loaded);
                         renderEntries();
                         continueEditors();
                         continueQuickCapture();
@@ -1339,8 +1367,7 @@ public class MainActivity extends Activity {
                 main.post(() -> { if (!destroyed && generation == refreshGeneration) {
                     projectLoading = false;
                     cancelQuickCapture();
-                    // Keep the last verified local view usable while a background provider
-                    // failure is retried; the queue still reports that the ZIP is pending.
+                    // Keep the last verified local view usable while provider access is restored.
                     renderEntries();
                     toast(errorMessage(error));
                 } });
@@ -1352,7 +1379,11 @@ public class MainActivity extends Activity {
         if (destroyed) return;
         Uri requested = projectUri;
         long generation = ++pendingRefreshGeneration;
-        if (requested == null) { stagedEntries = new JSONArray(); stagedProject = null; return; }
+        if (requested == null || !store.isWorkingProject(requested)) {
+            stagedEntries = new JSONArray();
+            stagedProject = null;
+            return;
+        }
         localIo.execute(() -> {
             if (generation != pendingRefreshGeneration) return;
             try {
@@ -1361,7 +1392,7 @@ public class MainActivity extends Activity {
                 main.post(() -> {
                     if (destroyed || generation != pendingRefreshGeneration || !requested.equals(projectUri)) return;
                     if (cached != null && (project == null
-                            || cached.optLong("revision") > project.optLong("revision"))) project = cached;
+                            || cached.optLong("revision") > project.optLong("revision"))) updateProjectIndex(cached);
                     stagedProject = requested;
                     stagedEntries = pending;
                     renderEntries();
@@ -1370,6 +1401,11 @@ public class MainActivity extends Activity {
                 main.post(() -> { if (!destroyed && generation == pendingRefreshGeneration) toast(errorMessage(error)); });
             }
         });
+    }
+
+    private void updateProjectIndex(JSONObject loaded) {
+        project = loaded;
+        if (entryViewer != null) entryViewer.refreshTranscripts(projectUri, loaded);
     }
 
     private List<JSONObject> entries() {
@@ -1393,6 +1429,7 @@ public class MainActivity extends Activity {
             if (notesSearch.length() > 0) notesSearch.setText("");
         }
         entryList.removeAllViews();
+        finishProjectButton.setVisibility(project != null && store.isWorkingProject(projectUri) ? View.VISIBLE : View.GONE);
         projectTitle.setText(project == null ? "Choose project  ⌄" : project.optString("name", "Project") + "  ⌄");
         List<JSONObject> list = entries();
         renderRecent(list);
@@ -1401,7 +1438,7 @@ public class MainActivity extends Activity {
         if (project == null) {
             empty("No project open", "");
             addAction(entryList, "Create a project", this::newProjectDialog);
-            addAction(entryList, "Open project ZIP", () -> chooseFolder(PICK_IMPORT));
+            addAction(entryList, "Import project ZIP", () -> chooseFolder(PICK_IMPORT));
             return;
         }
         int total = list.size();
@@ -1426,7 +1463,7 @@ public class MainActivity extends Activity {
             card.setBackground(touchSurface(panel, 20, border));
             JSONArray media = entry.optJSONArray("media");
             int size = media == null ? 0 : media.length();
-            TextView time = text(clock(timestamp) + (entry.optBoolean("_pending") ? "  ·  Adding to ZIP…"
+            TextView time = text(clock(timestamp) + (entry.optBoolean("_pending") ? "  ·  Saving to project…"
                     : size == 0 ? "  ·  Text" : "  ·  " + size + (size == 1 ? " file" : " linked files")), 11, muted);
             card.addView(time);
             TextView title = text(NoteEntries.entryLabel(entry), 16, ink);
@@ -1509,7 +1546,7 @@ public class MainActivity extends Activity {
         JSONObject entry = latest;
         recentTitle.setText(entry == null ? "Your latest note" : NoteEntries.entryLabel(entry));
         recentPreview.setText(entry == null ? "Hold to record · Swipe down to write" : clock(NoteEntries.entryTime(entry))
-                + (entry.optBoolean("_pending") ? " · Adding to project ZIP…"
+                + (entry.optBoolean("_pending") ? " · Saving to project…"
                 : entry.optString("text").trim().isEmpty() ? " · Hold to edit" : " · " + entry.optString("text").trim()));
         recentCard.setContentDescription(entry == null ? "No saved notes. Swipe up for all notes."
                 : "Latest note: " + NoteEntries.entryLabel(entry) + ". Tap to open; hold to edit; swipe up for all notes.");
@@ -1518,7 +1555,7 @@ public class MainActivity extends Activity {
     }
 
     private void showEntry(JSONObject entry) {
-        if (entry.optBoolean("_pending")) { toast("This capture is safe locally and is being added to the project ZIP."); return; }
+        if (entry.optBoolean("_pending")) { toast("This capture is safe locally and is being saved to the project."); return; }
         if (project == null || projectOperation) return;
         hideSearchKeyboard();
         Uri viewedProject = projectUri;
@@ -1626,7 +1663,7 @@ public class MainActivity extends Activity {
     private void editEntry(String entryId) {
         if (!captureReady()) return;
         for (JSONObject entry : entries()) if (entryId.equals(entry.optString("id"))) {
-            if (entry.optBoolean("_pending")) { toast("This capture is being added to the ZIP. You can edit it when saving finishes."); return; }
+            if (entry.optBoolean("_pending")) { toast("This capture is being saved. You can edit it when saving finishes."); return; }
             noteEditor(entryId, entry);
             return;
         }
@@ -1699,7 +1736,7 @@ public class MainActivity extends Activity {
                 JSONArray media = existing == null ? null : existing.optJSONArray("media");
                 if (value.trim().isEmpty() && (media == null || media.length() == 0)) { body.setError("Write some text before saving."); return; }
                 JSONObject metadata = MetadataCollector.snapshot(this);
-                // Capture ends on submission, without recording the subsequent ZIP write.
+                // Capture ends on submission, without recording the subsequent save.
                 finishTextRecording(destination, entryId, recordingKey);
                 projectOperation = true;
                 ++refreshGeneration;
@@ -1746,11 +1783,16 @@ public class MainActivity extends Activity {
             List<Uri> uris = store.projects();
             List<String> names = new ArrayList<>();
             for (Uri uri : uris) {
-                try { names.add(store.readProject(uri).optString("name", "Project")); }
-                catch (Exception error) { names.add("Unavailable · " + folderLabel(uri)); }
+                try {
+                    JSONObject index = store.readCachedProject(uri);
+                    if (index == null) index = store.readProject(uri);
+                    String name = index.optString("name", "Project");
+                    if (store.isWorkingProject(uri)) names.add(name);
+                    else names.add(name + (store.isArchive(uri) ? "  ·  ZIP  ·  " : "  ·  Folder  ·  ") + folderLabel(uri));
+                } catch (Exception error) { names.add("Unavailable · " + folderLabel(uri)); }
             }
             names.add("＋  Create a project");
-            names.add("Open project ZIP");
+            names.add("Import project ZIP");
             names.add("Import an old project folder");
             main.post(() -> {
                 if (destroyed) return;
@@ -1761,7 +1803,7 @@ public class MainActivity extends Activity {
                     if (which == uris.size()) newProjectDialog();
                     else if (which == uris.size() + 1) chooseFolder(PICK_IMPORT);
                     else if (which == uris.size() + 2) chooseFolder(PICK_LEGACY);
-                    else { project = null; projectUri = uris.get(which); nextEntryId = null; updateAttachmentNotice(); renderEntries(); refreshProject(); }
+                    else openProject(uris.get(which), store.defaultFolder());
                 }).setNegativeButton("Close", null).show();
             });
         });
@@ -1773,6 +1815,7 @@ public class MainActivity extends Activity {
         if (RecordingService.isBusy()) { toast("Finish recording before creating a project."); return; }
         LinearLayout content = dialogColumn();
         EditText name = new EditText(this);
+        name.setId(R.id.project_name_input);
         name.setHint("Project name");
         name.setSingleLine(true);
         name.setTextColor(ink);
@@ -1788,10 +1831,11 @@ public class MainActivity extends Activity {
             View.OnClickListener create = v -> {
                 String value = name.getText().toString().trim();
                 if (value.isEmpty()) { name.setError("Enter a project name"); return; }
-                pendingName = value;
                 dialog.dismiss();
-                if (v == dialog.getButton(AlertDialog.BUTTON_NEUTRAL) || defaultFolder == null) chooseFolder(PICK_CREATE);
-                else createProject(defaultFolder, value);
+                if (v == dialog.getButton(AlertDialog.BUTTON_NEUTRAL) || defaultFolder == null) {
+                    pendingName = value;
+                    if (!chooseFolder(PICK_CREATE)) pendingName = null;
+                } else createProject(defaultFolder, value);
             };
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(create);
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(create);
@@ -1800,33 +1844,98 @@ public class MainActivity extends Activity {
     }
 
     private void createProject(Uri parent, String name) {
+        if (cameraWorkPending() || RecordingService.isBusy() || projectOperation) {
+            toast("Finish the current operation before creating a project.");
+            return;
+        }
         projectOperation = true;
         ++refreshGeneration;
-        toast("Creating project ZIP…");
+        toast("Creating project folder…");
         io.execute(() -> {
             try {
-                Uri created = store.createProject(parent, name);
+                Uri created = store.createWorkingProject(parent, name);
                 JSONObject loaded = store.readProject(created);
-                store.setCurrentProject(created);
                 if (store.defaultFolder() == null) store.setDefaultFolder(parent);
-                main.post(() -> { if (!destroyed) { projectLoading = false; projectOperation = false; projectUri = created; project = loaded; nextEntryId = null; updateAttachmentNotice(); showRecord(); toast("Project ready."); } });
-            } catch (Exception error) { main.post(() -> { if (!destroyed) { projectOperation = false; message("Could not create project", errorMessage(error)); } }); }
+                main.post(() -> selectProject(created, loaded, "Project ready."));
+            } catch (Exception error) { main.post(() -> projectOperationFailed("Could not create project", error)); }
         });
     }
 
-    private void chooseFolder(int request) {
-        if (cameraWorkPending()) { toast("Finish the camera capture first."); return; }
-        if (RecordingService.isBusy() || projectOperation || projectLoading) { toast("Wait for the current operation to finish."); return; }
+    private void finishProjectDialog() {
+        if (touching || !readyToFinishProject()) return;
+        Uri destination = projectUri;
+        new AlertDialog.Builder(this).setTitle("Finish project?")
+                .setMessage("Save a ZIP of “" + project.optString("name", "this project")
+                        + "” and close it. You can import the ZIP later to edit or add notes.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Finish and close", (dialog, which) -> finishProject(destination))
+                .show();
+    }
+
+    private boolean readyToFinishProject() {
+        if (project == null || !store.isWorkingProject(projectUri)) return false;
+        if (cameraWorkPending() || RecordingService.isBusy()) {
+            toast("Finish the current recording first.");
+            return false;
+        }
+        if (FloatingRecorderService.isShowing()) {
+            toast("Close the floating mic first.");
+            return false;
+        }
+        if (projectOperation || projectLoading || permissionRequest || quickMode != QUICK_NONE) {
+            toast("Wait for the current operation to finish.");
+            return false;
+        }
+        return true;
+    }
+
+    private void finishProject(Uri destination) {
+        if (!destination.equals(projectUri) || !readyToFinishProject()) return;
+        projectOperation = true;
+        ++refreshGeneration;
+        stopPlayers();
+        hideSearchKeyboard();
+        toast("Creating project ZIP…");
+        io.execute(() -> {
+            try {
+                Uri archive = store.finishWorkingProject(destination);
+                sendBroadcast(new Intent(ProjectPublisher.ACTION_MEDIA_SAVED).setPackage(getPackageName()),
+                        "com.fieldnote.app.INTERNAL");
+                main.post(() -> {
+                    if (destroyed) return;
+                    projectOperation = false;
+                    refreshProject();
+                    showRecord();
+                    new AlertDialog.Builder(this).setTitle("Project finished")
+                            .setMessage("Saved ZIP to " + folderLabel(archive) + ".\n\nImport it from Projects to edit or add notes later.")
+                            .setPositiveButton("Done", null)
+                            .setNeutralButton("Share ZIP", (dialog, which) -> shareProject(archive))
+                            .setNegativeButton("Open ZIP", (dialog, which) -> openFinishedArchive(archive))
+                            .show();
+                });
+            } catch (Exception error) { main.post(() -> projectOperationFailed("Could not finish project", error)); }
+        });
+    }
+
+    private boolean chooseFolder(int request) {
+        if (cameraWorkPending()) { toast("Finish the camera capture first."); return false; }
+        if (RecordingService.isBusy() || projectOperation || projectLoading) { toast("Wait for the current operation to finish."); return false; }
         boolean zip = request == PICK_IMPORT;
+        int access = pickerAccess(request);
         Intent intent = new Intent(zip ? Intent.ACTION_OPEN_DOCUMENT : Intent.ACTION_OPEN_DOCUMENT_TREE)
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                .addFlags(access | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         if (zip) {
             intent.addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
             intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/zip", "application/x-zip-compressed", "application/octet-stream"});
         } else intent.addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
         if (store.defaultFolder() != null) intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, store.defaultFolder());
-        try { startActivityForResult(intent, request); }
-        catch (ActivityNotFoundException error) { message("Storage picker", "Enable the system Files app to choose a location."); }
+        try { startActivityForResult(intent, request); return true; }
+        catch (ActivityNotFoundException error) { message("Storage picker", "Enable the system Files app to choose a location."); return false; }
+    }
+
+    private static int pickerAccess(int request) {
+        int read = Intent.FLAG_GRANT_READ_URI_PERMISSION;
+        return request == PICK_IMPORT || request == PICK_LEGACY ? read : read | Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
     }
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
@@ -1839,75 +1948,77 @@ public class MainActivity extends Activity {
             } else main.post(this::continueQuickCapture);
             return;
         }
+        Uri importSource = null;
+        if (request == PICK_IMPORT_DESTINATION) {
+            importSource = pendingImportSource;
+            pendingImportSource = null;
+        }
+        String name = request == PICK_CREATE ? pendingName : null;
+        if (request == PICK_CREATE) pendingName = null;
         if (result != RESULT_OK || data == null || data.getData() == null) return;
         if (request != PICK_CREATE && request != PICK_DEFAULT && request != PICK_IMPORT
-                && request != PICK_LEGACY && request != PICK_MIGRATION_DESTINATION) return;
+                && request != PICK_LEGACY && request != PICK_IMPORT_DESTINATION) return;
         Uri uri = data.getData();
         try {
-            int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-            int required = Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
-            if ((flags & required) != required) throw new SecurityException("Choose a readable, writable location.");
-            getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            int required = pickerAccess(request);
+            if ((data.getFlags() & required) != required) throw new SecurityException(required == Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    ? "Choose a readable source." : "Choose a readable, writable location.");
+            getContentResolver().takePersistableUriPermission(uri, required);
         } catch (Exception error) { message("Storage access", errorMessage(error)); return; }
         if (request == PICK_DEFAULT) { store.setDefaultFolder(uri); toast("Default save location updated."); }
         else if (request == PICK_CREATE) {
-            if (pendingName != null && !pendingName.trim().isEmpty()) createProject(uri, pendingName);
+            if (name != null && !name.trim().isEmpty()) createProject(uri, name);
             else { store.setDefaultFolder(uri); newProjectDialog(); }
-        } else if (request == PICK_MIGRATION_DESTINATION) {
-            if (legacyProject != null) convertLegacy(legacyProject, uri);
-        } else if (request == PICK_LEGACY) {
-            legacyProject = uri;
-            if (store.defaultFolder() != null) convertLegacy(uri, store.defaultFolder());
-            else { toast("Choose where to save the project ZIP."); chooseFolder(PICK_MIGRATION_DESTINATION); }
-        } else {
-            projectOperation = true;
-            ++refreshGeneration;
-            io.execute(() -> {
-                try {
-                    if (!store.isArchive(uri)) throw new java.io.IOException("Choose a Fieldnote .zip file.");
-                    JSONObject imported = store.readProject(uri);
-                    main.post(() -> {
-                        if (destroyed) return;
-                        projectOperation = false;
-                        projectLoading = false;
-                        ++refreshGeneration;
-                        projectUri = uri;
-                        project = imported;
-                        store.setCurrentProject(uri);
-                        nextEntryId = null;
-                        updateAttachmentNotice();
-                        renderEntries();
-                    });
-                } catch (Exception error) { main.post(() -> { if (!destroyed) { projectOperation = false; message("Could not open ZIP", errorMessage(error)); } }); }
-            });
-        }
+        } else if (request == PICK_IMPORT_DESTINATION) {
+            if (importSource != null) openProject(importSource, uri);
+        } else openProject(uri, store.defaultFolder());
     }
 
-    private void convertLegacy(Uri source, Uri destination) {
+    private void openProject(Uri source, Uri destination) {
+        if (cameraWorkPending() || RecordingService.isBusy() || projectOperation) {
+            toast("Finish the current operation before opening a project.");
+            return;
+        }
+        boolean working = store.isWorkingProject(source);
+        if (!working && destination == null) {
+            if (pendingImportSource != null) return;
+            pendingImportSource = source;
+            toast("Choose a folder for the editable project copy.");
+            if (!chooseFolder(PICK_IMPORT_DESTINATION)) pendingImportSource = null;
+            return;
+        }
         projectOperation = true;
         ++refreshGeneration;
-        toast("Converting project to ZIP…");
+        if (!working) toast("Importing an editable project copy…");
         io.execute(() -> {
             try {
-                Uri converted = store.importLegacyProject(source, destination);
-                JSONObject loaded = store.readProject(converted);
-                main.post(() -> {
-                    if (destroyed) return;
-                    projectOperation = false;
-                    projectLoading = false;
-                    ++refreshGeneration;
-                    legacyProject = null;
-                    projectUri = converted;
-                    project = loaded;
-                    store.setCurrentProject(converted);
-                    if (store.defaultFolder() == null) store.setDefaultFolder(destination);
-                    nextEntryId = null;
-                    updateAttachmentNotice();
-                    renderEntries();
-                    toast("ZIP ready. Original folder preserved.");
-                });
-            } catch (Exception error) { main.post(() -> { if (!destroyed) { projectOperation = false; message("Conversion failed", errorMessage(error)); } }); }
+                Uri opened = working ? source : store.importWorkingProject(source, destination);
+                JSONObject loaded = store.readProject(opened);
+                if (working) store.setCurrentProject(opened);
+                else if (store.defaultFolder() == null) store.setDefaultFolder(destination);
+                main.post(() -> selectProject(opened, loaded, working ? null : "Project imported and ready to edit."));
+            } catch (Exception error) { main.post(() -> projectOperationFailed("Could not open project", error)); }
         });
+    }
+
+    private void projectOperationFailed(String title, Exception error) {
+        if (destroyed) return;
+        projectLoading = false;
+        projectOperation = false;
+        message(title, errorMessage(error));
+    }
+
+    private void selectProject(Uri selected, JSONObject loaded, String feedback) {
+        if (destroyed) return;
+        projectLoading = false;
+        projectOperation = false;
+        projectUri = selected;
+        updateProjectIndex(loaded);
+        nextEntryId = null;
+        updateAttachmentNotice();
+        refreshPendingEntries();
+        showRecord();
+        if (feedback != null) toast(feedback);
     }
 
     private void projectFiles() {
@@ -1921,12 +2032,11 @@ public class MainActivity extends Activity {
         if (projectUri == null || project == null) { toast("Choose a project first."); return; }
         if (filesDialog != null && filesDialog.isShowing()) return;
         final Uri destination = projectUri;
-        final Intent folderIntent, zipIntent;
+        final Intent folderIntent;
         try {
             folderIntent = ProjectFiles.folderIntent(destination);
-            zipIntent = ProjectFiles.zipIntent(destination);
         } catch (IllegalArgumentException unavailable) {
-            toast("Open a project ZIP before opening its files.");
+            toast("Open a project before opening its files.");
             return;
         }
         stopPlayers();
@@ -1937,21 +2047,14 @@ public class MainActivity extends Activity {
         location.setPadding(0, dp(4), 0, dp(8));
         content.addView(location);
         if (folderIntent == null) {
-            content.addView(text("The folder location is unavailable for this imported ZIP. You can open the ZIP itself.", 13, muted));
+            content.addView(text("The project storage folder is unavailable.", 13, muted));
         }
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Project files")
                 .setView(scroll(content)).setNegativeButton("Cancel", null).create();
         if (folderIntent != null) {
-            addAction(content, "Open storage folder", () -> openProjectFiles(dialog, destination, folderIntent, false))
+            addAction(content, "Open storage folder", () -> openProjectFiles(dialog, destination, folderIntent))
                     .setId(R.id.open_project_folder);
         }
-        addAction(content, "Open project ZIP", () -> openProjectFiles(dialog, destination, zipIntent, true))
-                .setId(R.id.open_project_zip);
-        addAction(content, "Share project ZIP", () -> {
-            if (filesDialog != dialog || !destination.equals(projectUri)) return;
-            dialog.dismiss();
-            shareProject();
-        }).setId(R.id.share_project_zip);
         filesDialog = dialog;
         dialog.setOnDismissListener(ignored -> {
             if (filesDialog == dialog) filesDialog = null;
@@ -1961,27 +2064,27 @@ public class MainActivity extends Activity {
         updateMotionControls();
     }
 
-    private void openProjectFiles(AlertDialog dialog, Uri destination, Intent intent, boolean openingZip) {
+    private void openProjectFiles(AlertDialog dialog, Uri destination, Intent intent) {
         if (destroyed || filesDialog != dialog || !destination.equals(projectUri)) return;
         if (touching || cameraWorkPending() || projectOperation || projectLoading || permissionRequest
                 || quickMode != QUICK_NONE) { toast("Finish the current operation first."); return; }
-        if (openingZip) {
-            if (RecordingService.isBusy()) { toast("Finish recording before opening the project ZIP."); return; }
-            ProjectPublisher.Snapshot publication = ProjectPublisher.snapshot();
-            if (publication.running || publication.finalizedCount > 0) {
-                toast("Wait for the queued files to finish updating the ZIP before opening it.");
-                return;
-            }
-        }
         dialog.dismiss();
         try {
             startActivity(intent);
         } catch (ActivityNotFoundException unavailable) {
-            message("No file explorer available", openingZip
-                    ? "No installed app can open this ZIP. You can share it from Project files."
-                    : "No installed app can open this storage folder. Try Open project ZIP instead.");
+            message("No file explorer available", "No installed app can open this storage folder.");
         } catch (SecurityException | IllegalArgumentException unavailable) {
-            message("Files unavailable", "The storage provider could not open this location. Open the project again from Settings to restore access.");
+            message("Files unavailable", "The storage provider could not open this location. Check access to the project folder.");
+        }
+    }
+
+    private void openFinishedArchive(Uri archive) {
+        try {
+            startActivity(ProjectFiles.zipIntent(archive));
+        } catch (ActivityNotFoundException unavailable) {
+            message("No ZIP viewer available", "Open the ZIP from Files at " + folderLabel(archive) + ".");
+        } catch (SecurityException | IllegalArgumentException unavailable) {
+            message("ZIP unavailable", "The storage provider could not open this ZIP at " + folderLabel(archive) + ".");
         }
     }
 
@@ -2018,7 +2121,7 @@ public class MainActivity extends Activity {
             requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, PERMISSION_LOCATION);
         });
         addAction(content, "Default save location", () -> chooseFolder(PICK_DEFAULT));
-        addAction(content, "Open project ZIP", () -> chooseFolder(PICK_IMPORT));
+        addAction(content, "Import project ZIP", () -> chooseFolder(PICK_IMPORT));
         addAction(content, "Import an old project folder", () -> chooseFolder(PICK_LEGACY));
         addAction(content, "Retry pending saves", this::retryPending);
         addAction(content, "Add Record now shortcut", () -> localIo.execute(() -> {
@@ -2114,28 +2217,21 @@ public class MainActivity extends Activity {
         String previousError = ProjectPublisher.snapshot().error;
         ProjectPublisher.retry(this);
         if (previousError != null && !previousError.isEmpty())
-            message("Retrying project ZIP", previousError + "\n\nThe originals remain on this device. Restore folder access or free storage if needed. A new background retry is starting.");
-        else toast("Retrying project ZIP saves in the background.");
+            message("Retrying project saves", previousError + "\n\nThe originals remain on this device. Restore folder access or free storage if needed. A new background retry is starting.");
+        else toast("Retrying project saves in the background.");
         refreshPendingEntries();
     }
 
-    private void storageInfo() {
-        if (projectUri == null) { newProjectDialog(); return; }
-        message("Project ZIP", folderLabel(projectUri) + "\n\nContains original media and index.json with capture times and links. Copy this ZIP to keep the complete project.");
-    }
-
-    private void shareProject() {
-        if (cameraWorkPending()) { toast("Finish the camera capture first."); return; }
-        if (projectUri == null || projectOperation || RecordingService.isBusy()) { toast("Wait for the current save to finish."); return; }
-        ProjectPublisher.Snapshot publication = ProjectPublisher.snapshot();
-        if (publication.running || publication.finalizedCount > 0) { toast("Wait for the queued files to finish updating the ZIP before sharing it."); return; }
+    private void shareProject(Uri archive) {
         try {
             Intent intent = new Intent(Intent.ACTION_SEND).setType("application/zip")
-                    .putExtra(Intent.EXTRA_STREAM, projectUri)
+                    .putExtra(Intent.EXTRA_STREAM, archive)
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            intent.setClipData(android.content.ClipData.newRawUri("Fieldnote project", projectUri));
+            intent.setClipData(android.content.ClipData.newRawUri("Fieldnote project", archive));
             startActivity(Intent.createChooser(intent, "Share project ZIP"));
-        } catch (Exception error) { storageInfo(); }
+        } catch (ActivityNotFoundException | SecurityException unavailable) {
+            message("ZIP could not be shared", "Find the ZIP in Files at " + folderLabel(archive) + ".");
+        }
     }
 
     @Override protected void onStart() {
@@ -2145,12 +2241,14 @@ public class MainActivity extends Activity {
         IntentFilter filter = new IntentFilter(RecordingService.ACTION_STATE);
         filter.addAction(ProjectPublisher.ACTION_MEDIA_SAVED);
         filter.addAction(ProjectPublisher.ACTION_STATE);
+        filter.addAction(AudioTranscriptionJob.ACTION_TRANSCRIPT_UPDATED);
         filter.addAction(WatchReceiverService.ACTION_STATUS_CHANGED);
         // Signature permission also protects this receiver on API 26–32, where
         // the newer NOT_EXPORTED flag is not enforced by the platform.
         registerReceiver(recordingReceiver, filter, "com.fieldnote.app.INTERNAL", null, Context.RECEIVER_NOT_EXPORTED);
         receiverRegistered = true;
         ProjectPublisher.kick(this);
+        AudioTranscriptionJob.kick(this);
         refreshPendingEntries();
         main.post(ticker);
     }
@@ -2272,7 +2370,8 @@ public class MainActivity extends Activity {
             draft.putString("tags", tags == null ? "" : tags.getText().toString());
             out.putBundle("noteDraft", draft);
         } else if (restoredNote != null) out.putBundle("noteDraft", restoredNote);
-        if (legacyProject != null) out.putString("legacyProject", legacyProject.toString());
+        if (pendingImportSource != null) out.putString("pendingImportSource", pendingImportSource.toString());
+        if (attemptedUpgrade != null) out.putString("attemptedUpgrade", attemptedUpgrade.toString());
         super.onSaveInstanceState(out);
     }
 

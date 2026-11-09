@@ -4,9 +4,12 @@ import static org.junit.Assert.*;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Parcel;
+import android.os.ParcelFileDescriptor;
 import android.os.PersistableBundle;
+import android.os.SystemClock;
 import android.provider.DocumentsContract;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -88,6 +91,123 @@ public final class ProjectStoreInstrumentedTest {
         }
         for (Uri archive : ownedArchives) deleteOwnPublication(archive);
         if (fixtureRoot != null) deleteFixtureTree(fixtureRoot);
+    }
+
+    @Test public void workingProjectExportsOnFinishAndCanBeReopenedForEdits() throws Exception {
+        Uri working = store.createWorkingProject(fixtureTree, "Working round trip");
+        assertEquals(working, store.currentProject());
+        assertFalse(store.isArchive(working));
+        assertWorkingFolderHasIndexAndMedia(working);
+        assertEquals(0, exportedZipCount());
+
+        long capturedAt = Instant.parse("2026-11-09T18:00:00Z").toEpochMilli();
+        String entryId = UUID.randomUUID().toString();
+        byte[] firstPhoto = encodedPhoto(0xff253d66);
+        JSONObject original = saveFixture(working, entryId, "photo", firstPhoto, capturedAt, capturedAt);
+        store.updateEntry(working, entryId, "Original note", "Before finishing");
+        String originalPath = original.getString("path");
+        assertArrayEquals(firstPhoto, bytes(store.mediaUri(working, originalPath)));
+        assertEquals(0, exportedZipCount());
+
+        Uri finished = store.finishWorkingProject(working);
+        ownedArchives.add(finished);
+        assertTrue(store.isArchive(finished));
+        assertFalse(store.isWorkingProject(working));
+        assertNull(store.currentProject());
+        assertEquals(finished, store.finishWorkingProject(working));
+        assertEquals(1, exportedZipCount());
+        byte[] originalArchive = bytes(finished);
+        assertArrayEquals(firstPhoto, archiveMembers(originalArchive).get(originalPath));
+        JSONObject exported = entryById(archivedIndex(originalArchive), entryId);
+        assertEquals("Before finishing", exported.getString("text"));
+        assertEquals(sha256(firstPhoto), exported.getJSONArray("media").getJSONObject(0).getString("sha256"));
+
+        Uri reopened = store.importWorkingProject(finished, fixtureTree);
+        assertEquals(reopened, store.currentProject());
+        assertNotEquals(finished, reopened);
+        assertWorkingFolderHasIndexAndMedia(reopened);
+        assertArrayEquals(firstPhoto, bytes(store.mediaUri(reopened, originalPath)));
+        store.updateEntry(reopened, entryId, "Edited note", "After reopening");
+        byte[] secondPhoto = encodedPhoto(0xff305e48);
+        JSONObject additional = saveFixture(reopened, entryId, "photo", secondPhoto, capturedAt + 4_000L,
+                capturedAt + 4_000L);
+        assertEquals(1, exportedZipCount());
+        assertArrayEquals("Reopening and editing must preserve the finished source", originalArchive, bytes(finished));
+
+        Uri revised = store.finishWorkingProject(reopened);
+        ownedArchives.add(revised);
+        assertNotEquals(finished, revised);
+        assertNull(store.currentProject());
+        assertEquals(2, exportedZipCount());
+        byte[] revisedArchive = bytes(revised);
+        JSONObject edited = entryById(archivedIndex(revisedArchive), entryId);
+        assertEquals("After reopening", edited.getString("text"));
+        assertEquals(2, edited.getJSONArray("media").length());
+        assertEquals(original.getString("startedAt"), edited.getJSONArray("media").getJSONObject(0)
+                .getString("startedAt"));
+        Map<String, byte[]> members = archiveMembers(revisedArchive);
+        assertArrayEquals(firstPhoto, members.get(originalPath));
+        assertArrayEquals(secondPhoto, members.get(additional.getString("path")));
+        assertArrayEquals(originalArchive, bytes(finished));
+    }
+
+    @Test public void failedFinishPreservesWorkingProjectForRetry() throws Exception {
+        Uri working = store.createWorkingProject(fixtureTree, "Retry finish");
+        String entryId = UUID.randomUUID().toString();
+        store.saveText(working, entryId, "Keep this draft", fixtureMetadata());
+        JSONObject before = store.readProject(working);
+        TestDocumentsProvider.failNextZipWriteAfterTruncate();
+        assertThrows(IOException.class, () -> store.finishWorkingProject(working));
+        assertEquals(working, store.currentProject());
+        assertEquals(before.toString(), store.readProject(working).toString());
+
+        Uri finished = store.finishWorkingProject(working);
+        ownedArchives.add(finished);
+        assertEquals("Keep this draft", entryById(archivedIndex(bytes(finished)), entryId).getString("text"));
+    }
+
+    @Test public void savedAudioAutomaticallyGetsItsOwnTranscriptInTheWorkingProjectAndZip() throws Exception {
+        Uri working = store.createWorkingProject(fixtureTree, "Spoken project");
+        String entryId = UUID.randomUUID().toString();
+        byte[] spoken = readAll(InstrumentationRegistry.getInstrumentation().getContext().getAssets()
+                .open("spoken-aac-stereo.m4a"));
+        long start = Instant.parse("2026-11-09T18:00:00Z").toEpochMilli();
+        JSONObject original = saveFixture(working, entryId, "audio", spoken, start, start + 6_000L);
+        store.updateEntry(working, entryId, "Recorded observation", "Keep my typed note");
+        assertEquals(0, exportedZipCount());
+
+        // The save must enqueue the Android job itself. Force only its scheduling
+        // window so a device's JobScheduler quotas cannot delay instrumentation.
+        String command = "cmd jobscheduler run -f " + context.getPackageName() + " " + AudioTranscriptionJob.JOB_ID;
+        ParcelFileDescriptor scheduled = InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                .executeShellCommand(command);
+        String result = new String(readAll(new ParcelFileDescriptor.AutoCloseInputStream(scheduled)), StandardCharsets.UTF_8);
+        JSONObject entry;
+        JSONObject media;
+        JSONObject transcript;
+        long deadline = SystemClock.elapsedRealtime() + 45_000L;
+        do {
+            entry = entryById(store.readProject(working), entryId);
+            media = entry.getJSONArray("media").getJSONObject(0);
+            transcript = media.getJSONObject("transcript");
+            if (!"pending".equals(transcript.getString("status"))) break;
+            SystemClock.sleep(100L);
+        } while (SystemClock.elapsedRealtime() < deadline);
+        assertEquals("Unexpected transcription status after JobScheduler reported " + result,
+                "complete", transcript.getString("status"));
+        assertTrue(transcript.getString("text").contains("blue notebook is on the table"));
+        assertEquals("Keep my typed note", entry.getString("text"));
+        assertEquals(original.getString("id"), media.getString("id"));
+        assertEquals(sha256(spoken), media.getString("sha256"));
+        assertArrayEquals(spoken, bytes(store.mediaUri(working, original.getString("path"))));
+        assertEquals(0, exportedZipCount());
+
+        Uri finished = store.finishWorkingProject(working);
+        ownedArchives.add(finished);
+        byte[] archive = bytes(finished);
+        JSONObject exportedAudio = entryById(archivedIndex(archive), entryId).getJSONArray("media").getJSONObject(0);
+        assertEquals(transcript.getString("text"), exportedAudio.getJSONObject("transcript").getString("text"));
+        assertArrayEquals(spoken, archiveMembers(archive).get(original.getString("path")));
     }
 
     @Test public void latestCreatedProjectPersistsIndependentlyOfSelectionOpeningAndImport() throws Exception {
@@ -1124,6 +1244,31 @@ public final class ProjectStoreInstrumentedTest {
         assertEquals("A project must publish one archive, without external loose files or project directories", 1, external.length);
         assertTrue(external[0].isFile());
         assertTrue(external[0].getName().endsWith(".zip"));
+    }
+
+    private void assertWorkingFolderHasIndexAndMedia(Uri working) {
+        String prefix = "root:" + fixtureRoot.getName() + "/";
+        String documentId = DocumentsContract.getDocumentId(working);
+        assertTrue(documentId.startsWith(prefix));
+        File directory = new File(fixtureRoot, documentId.substring(prefix.length()));
+        assertTrue(new File(directory, "index.json").isFile());
+        assertTrue(new File(directory, "media").isDirectory());
+    }
+
+    private int exportedZipCount() {
+        File[] archives = fixtureRoot.listFiles(file -> file.isFile() && file.getName().endsWith(".zip"));
+        assertNotNull(archives);
+        return archives.length;
+    }
+
+    private byte[] encodedPhoto(int color) {
+        Bitmap bitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888);
+        try {
+            bitmap.eraseColor(color);
+            ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+            assertTrue(bitmap.compress(Bitmap.CompressFormat.JPEG, 90, encoded));
+            return encoded.toByteArray();
+        } finally { bitmap.recycle(); }
     }
 
     private JSONObject archivedIndex(byte[] archive) throws Exception {

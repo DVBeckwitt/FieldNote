@@ -36,10 +36,11 @@ public final class TestDocumentsProvider extends ContentProvider {
     public static final String AUTHORITY = "com.fieldnote.app.testdocuments";
     private static final String ROOT_ID = "root";
     private static final AtomicInteger FAIL_CANONICAL_INDEX_WRITES = new AtomicInteger();
+    private static final AtomicReference<String> FAIL_WORKING_INDEX_WRITE_AFTER_TRUNCATE = new AtomicReference<>();
     private static final AtomicInteger FAIL_ZIP_WRITES = new AtomicInteger();
     private static final AtomicInteger FAIL_ZIP_WRITES_AFTER_TRUNCATE = new AtomicInteger();
     private static final AtomicReference<ReadFailures> FAIL_ZIP_READS = new AtomicReference<>();
-    private static final AtomicReference<WriteBarrier> NEXT_ZIP_WRITE = new AtomicReference<>();
+    private static final AtomicReference<WriteBarrier> NEXT_WRITE = new AtomicReference<>();
     private static final Set<WriteBarrier> WRITE_BARRIERS = ConcurrentHashMap.newKeySet();
     private static final String[] DOCUMENT_COLUMNS = {
         DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -69,6 +70,12 @@ public final class TestDocumentsProvider extends ContentProvider {
     public static void failNextZipWrite() { FAIL_ZIP_WRITES.set(1); }
     /** Models a provider that truncates the archive and then fails the write. */
     public static void failNextZipWriteAfterTruncate() { FAIL_ZIP_WRITES_AFTER_TRUNCATE.set(1); }
+    /** Models a provider failure while replacing the working project's index. */
+    public static void failNextWorkingIndexWriteAfterTruncate(Uri project) {
+        if (project == null || !AUTHORITY.equals(project.getAuthority()))
+            throw new IllegalArgumentException("Select a project in the private test provider");
+        FAIL_WORKING_INDEX_WRITE_AFTER_TRUNCATE.set(DocumentsContract.getDocumentId(project) + "/index.pending.json");
+    }
 
     /** Models temporary read/access failure without denying writes or changing stored bytes. */
     public static void failZipReads(Uri archive, int count) {
@@ -88,24 +95,36 @@ public final class TestDocumentsProvider extends ContentProvider {
 
     /** Blocks one matching ZIP open before truncation; never holds any provider lock. */
     public static WriteBarrier blockNextZipWrite(Uri archive) {
-        if (archive == null || !AUTHORITY.equals(archive.getAuthority()))
+        return blockNextWrite(archive, false);
+    }
+
+    public static WriteBarrier blockNextWorkingIndexWrite(Uri project) {
+        return blockNextWrite(project, true);
+    }
+
+    private static WriteBarrier blockNextWrite(Uri document, boolean index) {
+        if (document == null || !AUTHORITY.equals(document.getAuthority()))
             throw new IllegalArgumentException("Select a document in the private test provider");
-        WriteBarrier barrier = new WriteBarrier(DocumentsContract.getDocumentId(archive));
+        WriteBarrier barrier = new WriteBarrier(DocumentsContract.getDocumentId(document), index);
         WRITE_BARRIERS.add(barrier);
-        if (!NEXT_ZIP_WRITE.compareAndSet(null, barrier)) {
+        if (!NEXT_WRITE.compareAndSet(null, barrier)) {
             WRITE_BARRIERS.remove(barrier);
-            throw new IllegalStateException("A ZIP write barrier is already armed");
+            throw new IllegalStateException("A document write barrier is already armed");
         }
         return barrier;
     }
 
     public static final class WriteBarrier implements AutoCloseable {
         private final String documentId;
+        private final boolean index;
         private final CountDownLatch entered = new CountDownLatch(1);
         private final CountDownLatch released = new CountDownLatch(1);
         private volatile boolean timedOut;
 
-        private WriteBarrier(String documentId) { this.documentId = documentId; }
+        private WriteBarrier(String documentId, boolean index) {
+            this.documentId = documentId;
+            this.index = index;
+        }
 
         public boolean awaitBlocked(long timeout, TimeUnit unit) throws InterruptedException {
             return entered.await(timeout, unit);
@@ -117,7 +136,7 @@ public final class TestDocumentsProvider extends ContentProvider {
 
         public void release() {
             released.countDown();
-            NEXT_ZIP_WRITE.compareAndSet(this, null);
+            NEXT_WRITE.compareAndSet(this, null);
             if (entered.getCount() != 0) WRITE_BARRIERS.remove(this);
         }
 
@@ -129,7 +148,7 @@ public final class TestDocumentsProvider extends ContentProvider {
                 if (!released.await(30, TimeUnit.SECONDS)) {
                     timedOut = true;
                     released.countDown();
-                    throw new IOException("Test ZIP write barrier timed out without being released");
+                    throw new IOException("Test document write barrier timed out without being released");
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
@@ -143,10 +162,11 @@ public final class TestDocumentsProvider extends ContentProvider {
 
     public static void clearFailures() {
         FAIL_CANONICAL_INDEX_WRITES.set(0);
+        FAIL_WORKING_INDEX_WRITE_AFTER_TRUNCATE.set(null);
         FAIL_ZIP_WRITES.set(0);
         FAIL_ZIP_WRITES_AFTER_TRUNCATE.set(0);
         FAIL_ZIP_READS.set(null);
-        WriteBarrier armed = NEXT_ZIP_WRITE.getAndSet(null);
+        WriteBarrier armed = NEXT_WRITE.getAndSet(null);
         if (armed != null) armed.release();
         for (WriteBarrier barrier : WRITE_BARRIERS) barrier.release();
     }
@@ -190,18 +210,19 @@ public final class TestDocumentsProvider extends ContentProvider {
                     && FAIL_CANONICAL_INDEX_WRITES.getAndUpdate(value -> Math.max(0, value - 1)) > 0) {
                 throw new FileNotFoundException("Injected canonical-index write failure");
             }
+            if (mode.contains("w") && file.getName().equals("index.pending.json")) {
+                String id = documentId(uri);
+                pauseNextWrite(id, true);
+                String failingIndex = FAIL_WORKING_INDEX_WRITE_AFTER_TRUNCATE.get();
+                if (id.equals(failingIndex) && FAIL_WORKING_INDEX_WRITE_AFTER_TRUNCATE.compareAndSet(failingIndex, null))
+                    truncateAndFail(file, "working index");
+            }
             if (mode.contains("w") && file.getName().endsWith(".zip")) {
-                WriteBarrier barrier = NEXT_ZIP_WRITE.get();
-                if (barrier != null && barrier.documentId.equals(documentId(uri))
-                        && NEXT_ZIP_WRITE.compareAndSet(barrier, null)) barrier.pause();
+                pauseNextWrite(documentId(uri), false);
                 if (FAIL_ZIP_WRITES.getAndUpdate(value -> Math.max(0, value - 1)) > 0)
                     throw new FileNotFoundException("Injected ZIP publication failure before opening");
-                if (FAIL_ZIP_WRITES_AFTER_TRUNCATE.getAndUpdate(value -> Math.max(0, value - 1)) > 0) {
-                    try (FileOutputStream partial = new FileOutputStream(file, false)) {
-                        partial.write("incomplete provider write".getBytes(StandardCharsets.UTF_8));
-                    }
-                    throw new FileNotFoundException("Injected ZIP publication failure after truncation");
-                }
+                if (FAIL_ZIP_WRITES_AFTER_TRUNCATE.getAndUpdate(value -> Math.max(0, value - 1)) > 0)
+                    truncateAndFail(file, "ZIP");
             }
             return ParcelFileDescriptor.open(file, ParcelFileDescriptor.parseMode(mode));
         } catch (IOException invalid) {
@@ -209,6 +230,20 @@ public final class TestDocumentsProvider extends ContentProvider {
             error.initCause(invalid);
             throw error;
         }
+    }
+
+    private static void pauseNextWrite(String documentId, boolean index) throws IOException {
+        WriteBarrier barrier = NEXT_WRITE.get();
+        if (barrier == null || barrier.index != index) return;
+        String expected = index ? barrier.documentId + "/index.pending.json" : barrier.documentId;
+        if (expected.equals(documentId) && NEXT_WRITE.compareAndSet(barrier, null)) barrier.pause();
+    }
+
+    private static void truncateAndFail(File file, String kind) throws IOException {
+        try (FileOutputStream partial = new FileOutputStream(file, false)) {
+            partial.write("incomplete provider write".getBytes(StandardCharsets.UTF_8));
+        }
+        throw new FileNotFoundException("Injected " + kind + " publication failure after truncation");
     }
 
     @Override public ParcelFileDescriptor openFile(Uri uri, String mode, CancellationSignal signal)
