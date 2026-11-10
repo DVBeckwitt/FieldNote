@@ -1,0 +1,17 @@
+README	159	73a058af
+am/final.mdl	73728293	528c33b2
+am/tree	880976	306f365c
+conf/mfcc.conf	154	4e054874
+conf/model.conf	293	690bb927
+graph/Gr.fst	47168231	0e974808
+graph/HCLr.fst	66551106	d9b4ed6a
+graph/disambig_tid.int	234	0728010b
+graph/phones.txt	2176	536086c4
+graph/phones/word_boundary.int	2454	4ded1e8d
+graph/words.txt	5722620	d7bcd9d4
+ivector/final.dubm	168048	631eb4dd
+ivector/final.ie	19757687	14428cae
+ivector/final.mat	44975	ce7dccdc
+ivector/global_cmvn.stats	1080	bd68f71e
+ivector/online_cmvn.conf	95	5d4d6640
+ivector/splice.conf	35	c1955a83

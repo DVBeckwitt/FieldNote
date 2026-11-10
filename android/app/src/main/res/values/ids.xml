@@ -14,6 +14,9 @@
     <item type="id" name="finish_project_button" />
     <item type="id" name="entry_list" />
     <item type="id" name="settings_button" />
+    <item type="id" name="settings_recording" />
+    <item type="id" name="settings_transcription" />
+    <item type="id" name="settings_appearance" />
     <item type="id" name="dark_mode_switch" />
     <item type="id" name="capture_pages" />
     <item type="id" name="inline_camera" />

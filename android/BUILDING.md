@@ -10,7 +10,8 @@ to your selected JDK. Keep machine-specific `local.properties` out of version
 control. The first build needs access to the configured dependency repositories
 and the checksum-pinned Gradle distribution. The phone build resolves Vosk 0.3.75
 and its Java dependencies from Maven Central, downloads the pinned small English
-model from Alpha Cephei, and verifies its SHA-256 before packaging it in the APK.
+model from Alpha Cephei, verifies its SHA-256, and unpacks it into the APK's
+asset tree at build time.
 Use `--offline` once the Gradle distribution, dependencies, and model are cached.
 The installed phone app has the model it needs for offline transcription.
 

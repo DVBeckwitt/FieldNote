@@ -28,6 +28,11 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.DocumentsContract;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.RelativeSizeSpan;
+import android.text.style.StyleSpan;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.HapticFeedbackConstants;
@@ -43,6 +48,8 @@ import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.RadioButton;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -51,6 +58,7 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.IOException;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -61,10 +69,10 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Native notebook UI for working folders and finished project archives. */
+/** Native notebook UI for working project folders and legacy imports. */
 public class MainActivity extends Activity {
     private static final int PICK_CREATE = 40, PICK_DEFAULT = 41, PICK_IMPORT = 42,
-            PICK_LEGACY = 43, PICK_IMPORT_DESTINATION = 44, PICK_OVERLAY = 45;
+            PICK_LEGACY = 43, PICK_IMPORT_DESTINATION = 44, PICK_OVERLAY = 45, PICK_SPEECH_MODEL = 46;
     private static final int PERMISSION_MIC = 50, PERMISSION_CAMERA = 51, PERMISSION_LOCATION = 52, PERMISSION_FLOATING = 53;
     private static final int PERMISSION_WATCH = 54;
     private static final long HOLD_DELAY_MS = 180;
@@ -105,6 +113,11 @@ public class MainActivity extends Activity {
     private EntryViewer entryViewer;
     private AlertDialog noteDialog;
     private AlertDialog settingsDialog;
+    private SpeechModel pendingSpeechModel;
+    private TranscriptionSettings transcriptionSettings;
+    private final Runnable refreshModelSettings = this::refreshTranscriptionSettings;
+    // An install can finish while its settings page is closed or recreated.
+    private static ModelInstall modelInstall;
     private AlertDialog watchDialog;
     private AlertDialog filesDialog;
     private InlineCamera inlineCamera;
@@ -172,6 +185,7 @@ public class MainActivity extends Activity {
         dark = preferences.getBoolean("dark_mode", true);
         setTheme(dark ? R.style.FieldnoteDark : R.style.FieldnoteLight);
         super.onCreate(savedInstanceState);
+        SpeechModels.clearInterruptedInstalls(this);
         store = new ProjectStore(this);
         projectUri = store.currentProject();
         notesFilterProject = projectUri;
@@ -190,6 +204,7 @@ public class MainActivity extends Activity {
             markersOnly = savedInstanceState.getBoolean("markersOnly");
             String importSource = savedInstanceState.getString("pendingImportSource");
             if (importSource != null) pendingImportSource = Uri.parse(importSource);
+            pendingSpeechModel = SpeechModel.fromId(savedInstanceState.getString("pendingSpeechModel"));
             String upgrade = savedInstanceState.getString("attemptedUpgrade");
             if (upgrade != null) attemptedUpgrade = Uri.parse(upgrade);
             restoredNote = savedInstanceState.getBundle("noteDraft");
@@ -1865,8 +1880,8 @@ public class MainActivity extends Activity {
         if (touching || !readyToFinishProject()) return;
         Uri destination = projectUri;
         new AlertDialog.Builder(this).setTitle("Finish project?")
-                .setMessage("Save a ZIP of “" + project.optString("name", "this project")
-                        + "” and close it. You can import the ZIP later to edit or add notes.")
+                .setMessage("Close “" + project.optString("name", "this project")
+                        + "” and keep its files in the current folder. You can reopen it from Projects to keep working.")
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Finish and close", (dialog, which) -> finishProject(destination))
                 .show();
@@ -1895,10 +1910,10 @@ public class MainActivity extends Activity {
         ++refreshGeneration;
         stopPlayers();
         hideSearchKeyboard();
-        toast("Creating project ZIP…");
+        toast("Finishing project…");
         io.execute(() -> {
             try {
-                Uri archive = store.finishWorkingProject(destination);
+                Uri folder = store.finishWorkingProject(destination);
                 sendBroadcast(new Intent(ProjectPublisher.ACTION_MEDIA_SAVED).setPackage(getPackageName()),
                         "com.fieldnote.app.INTERNAL");
                 main.post(() -> {
@@ -1906,12 +1921,8 @@ public class MainActivity extends Activity {
                     projectOperation = false;
                     refreshProject();
                     showRecord();
-                    new AlertDialog.Builder(this).setTitle("Project finished")
-                            .setMessage("Saved ZIP to " + folderLabel(archive) + ".\n\nImport it from Projects to edit or add notes later.")
-                            .setPositiveButton("Done", null)
-                            .setNeutralButton("Share ZIP", (dialog, which) -> shareProject(archive))
-                            .setNegativeButton("Open ZIP", (dialog, which) -> openFinishedArchive(archive))
-                            .show();
+                    message("Project finished", "Project files are saved in " + folderLabel(folder)
+                            + ".\n\nReopen it from Projects to add or edit notes.");
                 });
             } catch (Exception error) { main.post(() -> projectOperationFailed("Could not finish project", error)); }
         });
@@ -1940,6 +1951,15 @@ public class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == PICK_SPEECH_MODEL) {
+            SpeechModel model = pendingSpeechModel;
+            pendingSpeechModel = null;
+            if (model != null && result == RESULT_OK && data != null && data.getData() != null) {
+                startModelInstall(getApplicationContext(), model, data.getData());
+                if (quickMode == QUICK_NONE) showSettingsPage(SettingsPage.TRANSCRIPTION);
+            }
+            return;
+        }
         if (request == PICK_OVERLAY) {
             overlayPermissionRequest = false;
             if (!android.provider.Settings.canDrawOverlays(this)) {
@@ -2078,52 +2098,151 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void openFinishedArchive(Uri archive) {
-        try {
-            startActivity(ProjectFiles.zipIntent(archive));
-        } catch (ActivityNotFoundException unavailable) {
-            message("No ZIP viewer available", "Open the ZIP from Files at " + folderLabel(archive) + ".");
-        } catch (SecurityException | IllegalArgumentException unavailable) {
-            message("ZIP unavailable", "The storage provider could not open this ZIP at " + folderLabel(archive) + ".");
-        }
-    }
-
     private void settings() {
         if (touching) return; // A second finger must not take focus from the held microphone.
         if (settingsDialog != null && settingsDialog.isShowing()) return;
+        showSettingsPage(null);
+    }
+
+    private enum SettingsPage {
+        RECORDING("Recording controls"), TRANSCRIPTION("Transcription"), PRIVACY("Capture privacy"),
+        STORAGE("Project storage"), APPEARANCE("Appearance");
+
+        final String title;
+        SettingsPage(String title) { this.title = title; }
+    }
+
+    private void showSettingsPage(SettingsPage page) {
         LinearLayout content = dialogColumn();
-        Switch darkSwitch = new Switch(this);
-        darkSwitch.setId(R.id.dark_mode_switch);
-        darkSwitch.setText("Dark mode"); darkSwitch.setTextColor(ink); darkSwitch.setTextSize(16); darkSwitch.setChecked(dark); darkSwitch.setPadding(0, dp(14), 0, dp(14));
-        content.addView(darkSwitch);
-        Switch metadata = new Switch(this);
-        metadata.setText("Capture metadata"); metadata.setTextColor(ink); metadata.setTextSize(15); metadata.setChecked(preferences.getBoolean("metadata_enabled", true)); metadata.setPadding(0, dp(20), 0, dp(14));
-        content.addView(metadata);
-        content.addView(text("Available location and sensors. Capture times are always kept.", 12, muted));
-        Switch motion = new Switch(this);
-        motion.setId(R.id.motion_controls_switch);
-        motion.setText("Shake to record");
-        motion.setTextColor(ink);
-        motion.setTextSize(15);
-        motion.setChecked(motionControls.isEnabled());
-        motion.setPadding(0, dp(20), 0, dp(10));
-        motion.setOnCheckedChangeListener((view, enabled) -> {
-            motionControls.setEnabled(enabled);
+        TranscriptionSettings picker = null;
+        if (page == null) {
+            settingsLink(content, SettingsPage.RECORDING.title, "Shake to record, widget, and shortcuts",
+                    () -> showSettingsPage(SettingsPage.RECORDING)).setId(R.id.settings_recording);
+            settingsLink(content, SettingsPage.TRANSCRIPTION.title, SpeechModels.selected(this).label + " selected",
+                    () -> showSettingsPage(SettingsPage.TRANSCRIPTION)).setId(R.id.settings_transcription);
+            settingsLink(content, "Watch recordings", "Connect or manage a paired watch", this::watchRecordings);
+            settingsLink(content, SettingsPage.PRIVACY.title, "Location and sensor metadata",
+                    () -> showSettingsPage(SettingsPage.PRIVACY));
+            settingsLink(content, SettingsPage.STORAGE.title, "Save location, imports, and pending saves",
+                    () -> showSettingsPage(SettingsPage.STORAGE));
+            settingsLink(content, SettingsPage.APPEARANCE.title, dark ? "Dark mode on" : "Dark mode off",
+                    () -> showSettingsPage(SettingsPage.APPEARANCE)).setId(R.id.settings_appearance);
+            settingsHelp(content, getString(R.string.app_version_label));
+        } else {
+            switch (page) {
+                case RECORDING -> addRecordingSettings(content);
+                case TRANSCRIPTION -> picker = new TranscriptionSettings(content);
+                case PRIVACY -> addPrivacySettings(content);
+                case STORAGE -> addStorageSettings(content);
+                case APPEARANCE -> addAppearanceSettings(content);
+            }
+        }
+        showSettingsDialog(page == null ? "Settings" : page.title, content,
+                page == null ? null : () -> showSettingsPage(null));
+        transcriptionSettings = picker;
+        refreshTranscriptionSettings();
+    }
+
+    private void showSettingsDialog(String title, LinearLayout content, Runnable back) {
+        main.removeCallbacks(refreshModelSettings);
+        transcriptionSettings = null;
+        AlertDialog.Builder builder = new AlertDialog.Builder(this).setTitle(title)
+                .setView(scroll(content)).setNegativeButton("Done", null);
+        if (back != null) builder.setNeutralButton("Back", (clicked, which) -> back.run());
+        AlertDialog previous = settingsDialog;
+        AlertDialog dialog = builder.create();
+        settingsDialog = dialog;
+        if (previous != null) previous.dismiss();
+        dialog.setOnDismissListener(ignored -> {
+            if (settingsDialog == dialog) {
+                settingsDialog = null;
+                transcriptionSettings = null;
+                main.removeCallbacks(refreshModelSettings);
+            }
             updateMotionControls();
         });
-        content.addView(motion);
-        content.addView(text("Shake once to start. Shake again to stop. Works while Record is open.", 12, muted));
-        if (!motionControls.isAvailable())
-            content.addView(text("An acceleration sensor is unavailable. Touch controls still work.", 12, muted));
+        if (back != null) {
+            dialog.setCanceledOnTouchOutside(false);
+            dialog.setOnCancelListener(ignored -> {
+                if (!destroyed && settingsDialog == dialog) back.run();
+            });
+        }
+        dialog.show();
+        updateMotionControls();
+    }
+
+    private Button settingsLink(LinearLayout content, String title, String description, Runnable open) {
+        Button link = addAction(content, title, open);
+        link.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        link.setMinimumHeight(dp(58));
+        link.setTextSize(15);
+        SpannableString label = new SpannableString(title + "\n" + description);
+        label.setSpan(new StyleSpan(Typeface.BOLD), 0, title.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        label.setSpan(new RelativeSizeSpan(0.86f), title.length() + 1, label.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        label.setSpan(new ForegroundColorSpan(muted), title.length() + 1, label.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        link.setText(label);
+        return link;
+    }
+
+    private TextView settingsHelp(LinearLayout content, String description) {
+        TextView help = text(description, 13, muted);
+        help.setPadding(0, dp(10), 0, dp(8));
+        content.addView(help);
+        return help;
+    }
+
+    private Switch settingsSwitch(LinearLayout content, String label, boolean checked) {
+        Switch control = new Switch(this);
+        control.setText(label);
+        control.setTextColor(ink);
+        control.setTextSize(16);
+        control.setChecked(checked);
+        control.setMinHeight(dp(48));
+        content.addView(control);
+        return control;
+    }
+
+    private void addAppearanceSettings(LinearLayout content) {
+        Switch darkSwitch = settingsSwitch(content, "Dark mode", dark);
+        darkSwitch.setId(R.id.dark_mode_switch);
+        darkSwitch.setOnCheckedChangeListener((button, checked) -> {
+            preferences.edit().putBoolean("dark_mode", checked).apply();
+            if (settingsDialog != null) settingsDialog.dismiss();
+            recreate();
+        });
+    }
+
+    private void addPrivacySettings(LinearLayout content) {
+        Switch metadata = settingsSwitch(content, "Capture metadata", preferences.getBoolean("metadata_enabled", true));
+        metadata.setOnCheckedChangeListener((button, checked) -> {
+            preferences.edit().putBoolean("metadata_enabled", checked).apply();
+            MetadataCollector.start(this);
+        });
+        settingsHelp(content, "Include available location and sensor readings. Capture times are always kept.");
         addAction(content, "Allow location metadata", () -> {
             preferences.edit().putBoolean("location_permission_asked", true).apply();
             permissionRequest = true;
             requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, PERMISSION_LOCATION);
         });
+    }
+
+    private void addStorageSettings(LinearLayout content) {
         addAction(content, "Default save location", () -> chooseFolder(PICK_DEFAULT));
         addAction(content, "Import project ZIP", () -> chooseFolder(PICK_IMPORT));
         addAction(content, "Import an old project folder", () -> chooseFolder(PICK_LEGACY));
         addAction(content, "Retry pending saves", this::retryPending);
+    }
+
+    private void addRecordingSettings(LinearLayout content) {
+        Switch motion = settingsSwitch(content, "Shake to record", motionControls.isEnabled());
+        motion.setId(R.id.motion_controls_switch);
+        motion.setOnCheckedChangeListener((view, enabled) -> {
+            motionControls.setEnabled(enabled);
+            updateMotionControls();
+        });
+        settingsHelp(content, "Shake once to start. Shake again to stop. Works while Record is open.");
+        if (!motionControls.isAvailable())
+            settingsHelp(content, "An acceleration sensor is unavailable. Touch controls still work.");
         addAction(content, "Add Record now shortcut", () -> localIo.execute(() -> {
             boolean accepted = RecordingShortcuts.requestPin(this);
             main.post(() -> { if (!destroyed) toast(accepted ? "Confirm the shortcut in your launcher." : "Long-press the Fieldnote app icon to find Record now."); });
@@ -2137,21 +2256,157 @@ public class MainActivity extends Activity {
             main.post(() -> { if (!destroyed) toast(accepted ? "Confirm the widget in your launcher." : "Add Recorder from your launcher’s widget picker."); });
         }));
         addAction(content, "Show floating mic", () -> acceptQuickIntent(RecordingShortcuts.overlayIntent(this)));
-        content.addView(text("Recorder widget: tap to start or stop audio on your home screen in the currently selected project. Record now opens this screen and starts audio. Floating mic keeps the full swipe controls over other apps. Record now and Floating mic use your last-created project. Only the floating mic needs Display over other apps permission.", 12, muted));
-        addAction(content, "Watch recordings", this::watchRecordings);
-        TextView version = text(getString(R.string.app_version_label), 12, muted);
-        version.setPadding(0, dp(20), 0, dp(12));
-        content.addView(version);
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Settings").setView(scroll(content)).setNegativeButton("Done", null).create();
-        settingsDialog = dialog;
-        dialog.setOnDismissListener(ignored -> {
-            if (settingsDialog == dialog) settingsDialog = null;
-            updateMotionControls();
+        settingsHelp(content, "Tap the Recorder widget to start or stop audio in your current project. Record now opens Fieldnote and starts audio in your last-created project.");
+        settingsHelp(content, "Floating mic uses your last-created project and keeps the swipe controls over other apps. It needs Display over other apps permission.");
+    }
+
+    private void showModelInstall(SpeechModel model) {
+        if (model.downloadUrl == null) return;
+        LinearLayout content = dialogColumn();
+        settingsHelp(content, model.description);
+        settingsHelp(content, "Download and extract the model outside Fieldnote. Then choose the folder named "
+                + model.id + ". Fieldnote keeps its own installed copy, so allow space for both folders.");
+        addAction(content, "Download model in browser", () -> {
+            Intent download = new Intent(Intent.ACTION_VIEW, Uri.parse(model.downloadUrl)).addCategory(Intent.CATEGORY_BROWSABLE);
+            try { startActivity(download); }
+            catch (ActivityNotFoundException unavailable) {
+                message("Browser unavailable", "Download and extract the model on another device, then copy its folder to this phone.\n\n" + model.downloadUrl);
+            }
         });
-        darkSwitch.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("dark_mode", checked).apply(); dialog.dismiss(); recreate(); });
-        metadata.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("metadata_enabled", checked).apply(); MetadataCollector.start(this); });
-        dialog.show();
-        updateMotionControls();
+        addAction(content, "Choose model folder", () -> chooseSpeechModelFolder(model));
+        showSettingsDialog(model.label, content, () -> showSettingsPage(SettingsPage.TRANSCRIPTION));
+    }
+
+    private void chooseSpeechModelFolder(SpeechModel model) {
+        if (pendingSpeechModel != null) return;
+        if (modelInstall != null && !modelInstall.finished) {
+            showSettingsPage(SettingsPage.TRANSCRIPTION);
+            return;
+        }
+        Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+        pendingSpeechModel = model;
+        try { startActivityForResult(picker, PICK_SPEECH_MODEL); }
+        catch (ActivityNotFoundException unavailable) {
+            pendingSpeechModel = null;
+            message("Folder picker unavailable", "Enable the system Files app to choose the extracted model folder.");
+        }
+    }
+
+    private static void startModelInstall(Context app, SpeechModel model, Uri source) {
+        if (SpeechModels.isReady(app, model) || (modelInstall != null && !modelInstall.finished)) return;
+        ModelInstall operation = new ModelInstall(model);
+        modelInstall = operation;
+        new Thread(() -> {
+            try { SpeechModels.install(app, model, source, percent -> operation.percent = percent); }
+            catch (IOException failure) {
+                operation.error = failure.getMessage() == null ? "Choose the extracted Vosk model folder and try again." : failure.getMessage();
+            } catch (RuntimeException unavailable) {
+                operation.error = "Could not read or install the model. Choose the extracted folder and try again.";
+            } finally { operation.finished = true; }
+        }, "Fieldnote-model-install").start();
+    }
+
+    private static final class ModelInstall {
+        final SpeechModel model;
+        volatile int percent = -1;
+        volatile boolean finished;
+        String error;
+
+        ModelInstall(SpeechModel model) { this.model = model; }
+    }
+
+    private void refreshTranscriptionSettings() {
+        main.removeCallbacks(refreshModelSettings);
+        if (destroyed || transcriptionSettings == null || settingsDialog == null || !settingsDialog.isShowing()) return;
+        if (transcriptionSettings.refresh()) main.postDelayed(refreshModelSettings, 300);
+    }
+
+    private final class TranscriptionSettings {
+        private final TextView status;
+        private final ProgressBar progress;
+        private final List<ModelChoice> choices = new ArrayList<>();
+
+        TranscriptionSettings(LinearLayout content) {
+            settingsHelp(content, "Choose a model for new transcriptions. Recognition runs offline on this phone.");
+            status = text("", 14, ink);
+            status.setPadding(0, dp(6), 0, dp(8));
+            status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+            content.addView(status);
+            progress = new ProgressBar(MainActivity.this, null, android.R.attr.progressBarStyleHorizontal);
+            progress.setContentDescription("Model installation progress");
+            content.addView(progress, new LinearLayout.LayoutParams(-1, dp(8)));
+            for (SpeechModel model : SpeechModel.values()) {
+                RadioButton option = new RadioButton(MainActivity.this);
+                option.setText(model.label);
+                option.setTextColor(ink);
+                option.setTextSize(16);
+                option.setMinHeight(dp(48));
+                option.setOnClickListener(view -> {
+                    if (SpeechModels.isReady(MainActivity.this, model)
+                            && SpeechModels.isSupported(MainActivity.this, model)) SpeechModels.select(MainActivity.this, model);
+                    if (modelInstall != null && modelInstall.finished && modelInstall.error == null
+                            && modelInstall.model == model) modelInstall = null;
+                    refreshTranscriptionSettings();
+                });
+                content.addView(option);
+                TextView details = settingsHelp(content, model.description);
+                Button install = model.downloadUrl == null ? null
+                        : addAction(content, "Get " + model.label, () -> showModelInstall(model));
+                choices.add(new ModelChoice(model, option, details, install));
+            }
+        }
+
+        boolean refresh() {
+            ModelInstall operation = modelInstall;
+            boolean busy = operation != null && !operation.finished;
+            String message = "";
+            if (operation != null) {
+                if (busy) message = "Installing " + operation.model.label + "…";
+                else if (operation.error != null) message = "Could not install " + operation.model.label + ". " + operation.error;
+                else message = operation.model.label + " is ready to select.";
+            }
+            if (!message.contentEquals(status.getText())) status.setText(message);
+            status.setVisibility(message.isEmpty() ? View.GONE : View.VISIBLE);
+            progress.setVisibility(busy ? View.VISIBLE : View.GONE);
+            if (busy) {
+                int percent = operation.percent;
+                progress.setIndeterminate(percent < 0);
+                if (percent >= 0) progress.setProgress(percent);
+            }
+            SpeechModel selected = SpeechModels.selected(MainActivity.this);
+            for (ModelChoice choice : choices) {
+                boolean ready = SpeechModels.isReady(MainActivity.this, choice.model);
+                boolean supported = SpeechModels.isSupported(MainActivity.this, choice.model);
+                choice.option.setEnabled(ready && supported);
+                choice.option.setChecked(selected == choice.model);
+                String description = choice.model.description;
+                if (!supported) description += " Requires a 64-bit phone with enough memory.";
+                else if (SpeechModels.isQuarantined(MainActivity.this, choice.model)) {
+                    description += " The last load was interrupted. Select this model again to retry.";
+                }
+                if (!description.contentEquals(choice.details.getText())) choice.details.setText(description);
+                if (choice.install != null) {
+                    choice.install.setVisibility(ready ? View.GONE : View.VISIBLE);
+                    choice.install.setEnabled(!busy && supported);
+                }
+            }
+            return busy;
+        }
+    }
+
+    private static final class ModelChoice {
+        final SpeechModel model;
+        final RadioButton option;
+        final TextView details;
+        final Button install;
+
+        ModelChoice(SpeechModel model, RadioButton option, TextView details, Button install) {
+            this.model = model;
+            this.option = option;
+            this.details = details;
+            this.install = install;
+        }
     }
 
     private void watchRecordings() {
@@ -2220,18 +2475,6 @@ public class MainActivity extends Activity {
             message("Retrying project saves", previousError + "\n\nThe originals remain on this device. Restore folder access or free storage if needed. A new background retry is starting.");
         else toast("Retrying project saves in the background.");
         refreshPendingEntries();
-    }
-
-    private void shareProject(Uri archive) {
-        try {
-            Intent intent = new Intent(Intent.ACTION_SEND).setType("application/zip")
-                    .putExtra(Intent.EXTRA_STREAM, archive)
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            intent.setClipData(android.content.ClipData.newRawUri("Fieldnote project", archive));
-            startActivity(Intent.createChooser(intent, "Share project ZIP"));
-        } catch (ActivityNotFoundException | SecurityException unavailable) {
-            message("ZIP could not be shared", "Find the ZIP in Files at " + folderLabel(archive) + ".");
-        }
     }
 
     @Override protected void onStart() {
@@ -2312,6 +2555,7 @@ public class MainActivity extends Activity {
     @Override protected void onDestroy() {
         destroyed = true;
         main.removeCallbacks(continueAfterOverlayHide);
+        main.removeCallbacks(refreshModelSettings);
         if (motionControls != null) motionControls.close();
         if (settingsDialog != null) settingsDialog.dismiss();
         if (watchDialog != null) watchDialog.dismiss();
@@ -2371,6 +2615,7 @@ public class MainActivity extends Activity {
             out.putBundle("noteDraft", draft);
         } else if (restoredNote != null) out.putBundle("noteDraft", restoredNote);
         if (pendingImportSource != null) out.putString("pendingImportSource", pendingImportSource.toString());
+        if (pendingSpeechModel != null) out.putString("pendingSpeechModel", pendingSpeechModel.id);
         if (attemptedUpgrade != null) out.putString("attemptedUpgrade", attemptedUpgrade.toString());
         super.onSaveInstanceState(out);
     }

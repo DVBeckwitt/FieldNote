@@ -1,3 +1,39 @@
+# 1.1.0-beta.2 validation
+
+Fieldnote **1.1.0-beta.2**, phone code **28**, was validated on 2026-11-09.
+The [GitHub prerelease](https://github.com/DVBeckwitt/FieldNote/releases/tag/v1.1.0-beta.2)
+provides the signed phone APK. The [stable 1.0.0 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v1.0.0)
+provides the compatible Fieldnote Voice watch APK.
+
+- All 172 phone and 4 watch instrumentation tests passed on Android 16/API 36.
+  The first phone run ended when the emulator disconnected during the shake
+  test, as previously observed. Fresh instances completed the shake test,
+  the rest of its capture class, and the remaining tests in separate runs.
+  The reports contain all 172 distinct passing phone tests with no skips.
+- All 73 phone JVM, 3 watchlink JVM, and 7 Node 24 prototype tests passed.
+  Prototype syntax and build checks passed. Signed phone and watch builds
+  completed with JDK 21, Gradle 8.14.6, and Android SDK 35. Release lint found
+  zero errors, 56 phone warnings, and two watch warnings.
+- The signed in-place update from beta.1 on an Android 16 emulator retained
+  microphone permission, appearance, the selected project, and byte-identical
+  project index and recorded AAC. All four transcription choices appeared.
+  Finish closed the same folder, and Projects reopened it without a ZIP or
+  changes to the index and audio bytes.
+- Large-model recovery tests simulate an interrupted native load and verify
+  the persisted block on further attempts. Full and GigaSpeech were not run on
+  a physical device for this release.
+
+The signed `Fieldnote-1.1.0-beta.2.apk` is **82,330,916 bytes** with SHA-256
+`207114f9b0deaa40d881bed8f1f1945f46584f682695f3ef3dfeba9a49486b11`.
+It passes APK Signature Scheme v2 and 16 KiB alignment checks, uses the
+existing installation certificate, and packages the bundled model as separate
+files. It is non-debuggable and has no Android internet permission.
+
+Fieldnote has no hosted CI workflows. These results cover local builds and
+dedicated Android 16 emulators, including the system storage provider.
+
+---
+
 # 1.1.0-beta.1 validation
 
 Fieldnote **1.1.0-beta.1**, phone code **27**, was validated on 2026-11-09.

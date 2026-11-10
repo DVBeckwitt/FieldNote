@@ -445,8 +445,8 @@ public final class NativeCaptureInstrumentedTest {
         assertCapturePageOnly();
     }
 
-    @Test public void headerFinishCreatesArchiveAndClosesProject() throws Exception {
-        String text = "Record to archive only on Finish";
+    @Test public void headerFinishClosesAndReopensTheSameFolderWithoutCreatingAnArchive() throws Exception {
+        String text = "Keep this note in its project folder";
         store.saveText(projectUri, UUID.randomUUID().toString(), text, new JSONObject(), new JSONArray());
         store.setDefaultFolder(DocumentsContract.buildTreeDocumentUri(projectUri.getAuthority(),
                 DocumentsContract.getTreeDocumentId(projectUri)));
@@ -468,7 +468,7 @@ public final class NativeCaptureInstrumentedTest {
         try {
             await("the finish dialog accepts confirmation", 5_000, () -> performDialogAction(
                     "android:id/button1", AccessibilityNodeInfo.ACTION_CLICK, null));
-            await("the archived project closes and its Finish action disappears", 15_000, () -> {
+            await("the project closes and its Finish action disappears", 15_000, () -> {
                 AtomicBoolean closed = new AtomicBoolean();
                 onNotebook(activity -> {
                     TextView title = activity.findViewById(R.id.project_title);
@@ -478,11 +478,13 @@ public final class NativeCaptureInstrumentedTest {
                 return closed.get();
             });
             assertNull(store.currentProject());
-            assertFalse(store.isWorkingProject(projectUri));
-            await("the saved archive dialog can be dismissed", 5_000, () -> performDialogAction(
+            assertTrue(store.isWorkingProject(projectUri));
+            assertTrue(store.projects().contains(projectUri));
+            assertEquals(0, projectArchives().length);
+            await("the project finished dialog can be dismissed", 5_000, () -> performDialogAction(
                     "android:id/button1", AccessibilityNodeInfo.ACTION_CLICK, null));
             onNotebook(activity -> assertTrue(activity.findViewById(R.id.project_title).performClick()));
-            await("the finished archive can be reopened from Projects", 5_000,
+            await("the finished folder can be reopened from Projects", 5_000,
                     () -> chooseFinishedProject("Native capture integration"));
         } finally {
             info.flags = previousFlags;
@@ -491,7 +493,7 @@ public final class NativeCaptureInstrumentedTest {
         awaitNotebookReady();
         Uri reopened = store.currentProject();
         assertTrue(store.isWorkingProject(reopened));
-        assertNotEquals(projectUri, reopened);
+        assertEquals(projectUri, reopened);
         awaitRecentTitle(text);
         longPressRecent();
         String changed = "Edit after reopening";
@@ -499,12 +501,9 @@ public final class NativeCaptureInstrumentedTest {
             ((EditText) dialog.findViewById(R.id.note_text_input)).setText(changed);
             assertTrue(dialog.findViewById(R.id.note_save).performClick());
         });
-        await("the reopened copy accepts a note edit", 15_000,
+        await("the reopened folder accepts a note edit", 15_000,
                 () -> changed.equals(store.readProject(reopened).getJSONArray("entries").getJSONObject(0).optString("text")));
-        File[] archives = projectArchives();
-        assertEquals(1, archives.length);
-        JSONObject index = ProjectArchive.verify(archives[0]).index;
-        assertEquals(text, index.getJSONArray("entries").getJSONObject(0).getString("text"));
+        assertEquals(0, projectArchives().length);
     }
 
     private boolean chooseFinishedProject(String name) {
@@ -514,7 +513,7 @@ public final class NativeCaptureInstrumentedTest {
             List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(name);
             try {
                 for (AccessibilityNodeInfo node : nodes) {
-                    if (node.isVisibleToUser() && String.valueOf(node.getText()).startsWith(name + "  ·  ")
+                    if (node.isVisibleToUser() && name.equals(String.valueOf(node.getText()))
                             && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
                 }
                 return false;
@@ -2605,8 +2604,12 @@ public final class NativeCaptureInstrumentedTest {
     }
 
     private void openShakeSettings() throws Exception {
+        openSettingsSection(R.id.settings_recording);
+    }
+
+    private void openSettingsSection(int id) throws Exception {
         onNotebook(activity -> assertTrue(activity.findViewById(R.id.settings_button).performClick()));
-        await("the native shake Settings dialog opens", 5_000, () -> {
+        await("the native Settings dialog opens", 5_000, () -> {
             AtomicBoolean showing = new AtomicBoolean();
             onNotebook(activity -> {
                 AlertDialog dialog = (AlertDialog) readField(activity, "settingsDialog");
@@ -2614,6 +2617,7 @@ public final class NativeCaptureInstrumentedTest {
             });
             return showing.get();
         });
+        onSettingsDialog(dialog -> assertTrue(dialog.findViewById(id).performClick()));
     }
 
     private void onSettingsDialog(Consumer<AlertDialog> action) {
@@ -2631,7 +2635,7 @@ public final class NativeCaptureInstrumentedTest {
         awaitNotebookReady();
         assertCapturePageOnly();
         onNotebook(activity -> assertEquals(Color.parseColor("#91C5FF"), accent(activity)));
-        onNotebook(activity -> assertTrue(activity.findViewById(R.id.settings_button).performClick()));
+        openSettingsSection(R.id.settings_appearance);
         AccessibilityServiceInfo info = instrumentation.getUiAutomation().getServiceInfo();
         int previousFlags = info.flags;
         info.flags |= AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS;
@@ -2654,6 +2658,56 @@ public final class NativeCaptureInstrumentedTest {
         } finally {
             info.flags = previousFlags;
             instrumentation.getUiAutomation().setServiceInfo(info);
+        }
+    }
+
+    @Test public void transcriptionSettingsShowAllModelsAndInstallFromAFolder() throws Exception {
+        SpeechModel previous = SpeechModels.selected(context);
+        boolean lgraphReady = SpeechModels.isReady(context, SpeechModel.LGRAPH);
+        try {
+            SpeechModels.select(context, SpeechModel.SMALL);
+            notebook = ActivityScenario.launch(MainActivity.class);
+            awaitNotebookReady();
+            openSettingsSection(R.id.settings_transcription);
+            onSettingsDialog(dialog -> {
+                View settings = dialog.getWindow().getDecorView();
+                for (SpeechModel model : SpeechModel.values()) assertTrue(containsText(settings, model.label));
+                android.widget.RadioButton small = (android.widget.RadioButton) clickableEntry(settings, SpeechModel.SMALL.label);
+                assertTrue(small.isChecked());
+                assertTrue(small.isEnabled());
+                if (!lgraphReady) {
+                    View getModel = clickableEntry(settings, "Get " + SpeechModel.LGRAPH.label);
+                    assertNotNull(getModel);
+                    assertTrue(getModel.performClick());
+                }
+            });
+            if (!lgraphReady) {
+                AtomicReference<Intent> launched = new AtomicReference<>();
+                Instrumentation.ActivityMonitor monitor = new Instrumentation.ActivityMonitor() {
+                    @Override public Instrumentation.ActivityResult onStartActivity(Intent intent) {
+                        launched.set(new Intent(intent));
+                        return new Instrumentation.ActivityResult(Activity.RESULT_CANCELED, null);
+                    }
+                };
+                instrumentation.addMonitor(monitor);
+                try {
+                    onSettingsDialog(dialog -> {
+                        View settings = dialog.getWindow().getDecorView();
+                        assertTrue(containsText(settings, SpeechModel.LGRAPH.id));
+                        assertTrue(clickableEntry(settings, "Download model in browser").performClick());
+                    });
+                    assertEquals(Intent.ACTION_VIEW, launched.get().getAction());
+                    assertEquals(Uri.parse(SpeechModel.LGRAPH.downloadUrl), launched.get().getData());
+                    onSettingsDialog(dialog -> assertTrue(clickableEntry(dialog.getWindow().getDecorView(),
+                            "Choose model folder").performClick()));
+                    assertEquals(Intent.ACTION_OPEN_DOCUMENT_TREE, launched.get().getAction());
+                } finally { instrumentation.removeMonitor(monitor); }
+                onSettingsDialog(dialog -> assertTrue(dialog.getButton(AlertDialog.BUTTON_NEUTRAL).performClick()));
+            }
+            onSettingsDialog(dialog -> assertTrue(dialog.getButton(AlertDialog.BUTTON_NEUTRAL).performClick()));
+            onSettingsDialog(dialog -> assertNotNull(dialog.findViewById(R.id.settings_transcription)));
+        } finally {
+            SpeechModels.select(context, previous);
         }
     }
 

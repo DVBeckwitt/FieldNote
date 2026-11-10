@@ -24,8 +24,8 @@ android {
         applicationId 'com.fieldnote.app'
         minSdk 26
         targetSdk 35
-        versionCode 27
-        versionName '1.1.0-beta.1'
+        versionCode 28
+        versionName '1.1.0-beta.2'
         resValue 'string', 'app_version_label', "Fieldnote ${versionName}"
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
@@ -58,7 +58,6 @@ android {
         }
     }
     lint { abortOnError true }
-    androidResources { noCompress += 'zip' }
 }
 
 configurations {
@@ -78,6 +77,12 @@ dependencies {
 }
 
 abstract class StageSpeechModel extends DefaultTask {
+    @javax.inject.Inject
+    abstract ArchiveOperations getArchiveOperations()
+
+    @javax.inject.Inject
+    abstract FileSystemOperations getFileSystemOperations()
+
     @InputFiles
     @PathSensitive(PathSensitivity.NONE)
     abstract ConfigurableFileCollection getArchives()
@@ -95,10 +100,21 @@ abstract class StageSpeechModel extends DefaultTask {
         if (digest.digest().encodeHex().toString() != '30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498') {
             throw new GradleException('The downloaded Vosk speech model failed SHA-256 verification.')
         }
-        def assets = assetsDirectory.get().asFile
-        java.nio.file.Files.createDirectories(assets.toPath())
-        java.nio.file.Files.copy(model.toPath(), new File(assets, 'offline-speech-model.zip').toPath(),
-                java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        fileSystemOperations.sync {
+            from(archiveOperations.zipTree(model)) {
+                eachFile { details ->
+                    def segments = details.relativePath.segments.toList()
+                    if (segments.size() < 2 || segments[0] != 'vosk-model-small-en-us-0.15'
+                            || segments.any { it in ['', '.', '..'] || it.contains('\\') || it.contains(':') }) {
+                        throw new GradleException('The Vosk speech model archive has an unexpected path.')
+                    }
+                    details.relativePath = new RelativePath(true,
+                            (['offline-speech-model'] + segments.drop(1)) as String[])
+                }
+                includeEmptyDirs = false
+            }
+            into assetsDirectory
+        }
     }
 }
 

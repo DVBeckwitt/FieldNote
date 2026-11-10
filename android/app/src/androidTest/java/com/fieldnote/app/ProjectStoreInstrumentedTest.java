@@ -30,10 +30,12 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -93,7 +95,8 @@ public final class ProjectStoreInstrumentedTest {
         if (fixtureRoot != null) deleteFixtureTree(fixtureRoot);
     }
 
-    @Test public void workingProjectExportsOnFinishAndCanBeReopenedForEdits() throws Exception {
+    @Test public void finishKeepsTheSameFolderAndCanBeReopenedForEdits() throws Exception {
+        assertTrue(bookmarks.edit().clear().commit());
         Uri working = store.createWorkingProject(fixtureTree, "Working round trip");
         assertEquals(working, store.currentProject());
         assertFalse(store.isArchive(working));
@@ -110,63 +113,188 @@ public final class ProjectStoreInstrumentedTest {
         assertEquals(0, exportedZipCount());
 
         Uri finished = store.finishWorkingProject(working);
-        ownedArchives.add(finished);
-        assertTrue(store.isArchive(finished));
-        assertFalse(store.isWorkingProject(working));
+        assertEquals(working, finished);
+        assertFalse(store.isArchive(finished));
+        assertTrue(store.isWorkingProject(working));
+        assertTrue(store.projects().contains(working));
         assertNull(store.currentProject());
+        assertNull(store.lastCreatedProject());
         assertEquals(finished, store.finishWorkingProject(working));
-        assertEquals(1, exportedZipCount());
-        byte[] originalArchive = bytes(finished);
-        assertArrayEquals(firstPhoto, archiveMembers(originalArchive).get(originalPath));
-        JSONObject exported = entryById(archivedIndex(originalArchive), entryId);
+        assertEquals(0, exportedZipCount());
+        assertArrayEquals(firstPhoto, bytes(store.mediaUri(finished, originalPath)));
+        JSONObject exported = entryById(store.readProject(finished), entryId);
         assertEquals("Before finishing", exported.getString("text"));
         assertEquals(sha256(firstPhoto), exported.getJSONArray("media").getJSONObject(0).getString("sha256"));
+        assertThrows(IOException.class, () -> store.updateEntry(finished, entryId, "Closed", "Open it before editing"));
 
-        Uri reopened = store.importWorkingProject(finished, fixtureTree);
-        assertEquals(reopened, store.currentProject());
-        assertNotEquals(finished, reopened);
-        assertWorkingFolderHasIndexAndMedia(reopened);
-        assertArrayEquals(firstPhoto, bytes(store.mediaUri(reopened, originalPath)));
-        store.updateEntry(reopened, entryId, "Edited note", "After reopening");
+        store.setCurrentProject(finished);
+        assertEquals(finished, store.currentProject());
+        assertWorkingFolderHasIndexAndMedia(finished);
+        store.updateEntry(finished, entryId, "Edited note", "After reopening");
         byte[] secondPhoto = encodedPhoto(0xff305e48);
-        JSONObject additional = saveFixture(reopened, entryId, "photo", secondPhoto, capturedAt + 4_000L,
+        JSONObject additional = saveFixture(finished, entryId, "photo", secondPhoto, capturedAt + 4_000L,
                 capturedAt + 4_000L);
-        assertEquals(1, exportedZipCount());
-        assertArrayEquals("Reopening and editing must preserve the finished source", originalArchive, bytes(finished));
 
-        Uri revised = store.finishWorkingProject(reopened);
-        ownedArchives.add(revised);
-        assertNotEquals(finished, revised);
+        assertEquals(finished, store.finishWorkingProject(finished));
         assertNull(store.currentProject());
-        assertEquals(2, exportedZipCount());
-        byte[] revisedArchive = bytes(revised);
-        JSONObject edited = entryById(archivedIndex(revisedArchive), entryId);
+        assertEquals(0, exportedZipCount());
+        JSONObject edited = entryById(store.readProject(finished), entryId);
         assertEquals("After reopening", edited.getString("text"));
         assertEquals(2, edited.getJSONArray("media").length());
         assertEquals(original.getString("startedAt"), edited.getJSONArray("media").getJSONObject(0)
                 .getString("startedAt"));
-        Map<String, byte[]> members = archiveMembers(revisedArchive);
-        assertArrayEquals(firstPhoto, members.get(originalPath));
-        assertArrayEquals(secondPhoto, members.get(additional.getString("path")));
-        assertArrayEquals(originalArchive, bytes(finished));
+        assertArrayEquals(firstPhoto, bytes(store.mediaUri(finished, originalPath)));
+        assertArrayEquals(secondPhoto, bytes(store.mediaUri(finished, additional.getString("path"))));
     }
 
     @Test public void failedFinishPreservesWorkingProjectForRetry() throws Exception {
         Uri working = store.createWorkingProject(fixtureTree, "Retry finish");
         String entryId = UUID.randomUUID().toString();
-        store.saveText(working, entryId, "Keep this draft", fixtureMetadata());
+        byte[] photo = encodedPhoto(0xff253d66);
+        long now = System.currentTimeMillis();
+        JSONObject media = saveFixture(working, entryId, "photo", photo, now, now);
+        store.updateEntry(working, entryId, "Keep this note", "Keep this draft");
         JSONObject before = store.readProject(working);
-        TestDocumentsProvider.failNextZipWriteAfterTruncate();
+        File original = new File(new File(fixtureRoot, "Retry finish"), media.getString("path"));
+        writeFile(original, new byte[]{1});
         assertThrows(IOException.class, () -> store.finishWorkingProject(working));
         assertEquals(working, store.currentProject());
         assertEquals(before.toString(), store.readProject(working).toString());
+        assertEquals(0, exportedZipCount());
 
+        writeFile(original, photo);
         Uri finished = store.finishWorkingProject(working);
-        ownedArchives.add(finished);
-        assertEquals("Keep this draft", entryById(archivedIndex(bytes(finished)), entryId).getString("text"));
+        assertEquals(working, finished);
+        assertEquals("Keep this draft", entryById(store.readProject(finished), entryId).getString("text"));
+        assertArrayEquals(photo, bytes(store.mediaUri(finished, media.getString("path"))));
+        assertEquals(0, exportedZipCount());
     }
 
-    @Test public void savedAudioAutomaticallyGetsItsOwnTranscriptInTheWorkingProjectAndZip() throws Exception {
+    @Test public void interruptedLegacyFinishLeavesTheFolderAndDoesNotRewriteTheZip() throws Exception {
+        verifyLegacyFinishRecovery(false);
+    }
+
+    @Test public void committedLegacyFinishRemainsReadableAfterRetiringItsJournal() throws Exception {
+        verifyLegacyFinishRecovery(true);
+    }
+
+    private void verifyLegacyFinishRecovery(boolean committed) throws Exception {
+        Uri working = store.createWorkingProject(fixtureTree, "Older Finish");
+        JSONObject index = store.readProject(working);
+        byte[] snapshot = zip(Collections.singletonMap("index.json", index.toString().getBytes(StandardCharsets.UTF_8)));
+        byte[] external = committed ? snapshot : new byte[]{1, 2, 3};
+        Uri archive = writeArchive("Older Finish.zip", external);
+        String key = sha256(archive.toString().getBytes(StandardCharsets.UTF_8));
+        File publication = new File(new File(context.getFilesDir(), "archive-publications"), key);
+        File retired = new File(context.getNoBackupFilesDir(), "retired-zip-finishes");
+        assertTrue(publication.mkdirs());
+        Files.write(new File(publication, "next.zip").toPath(), snapshot);
+        JSONObject record = new JSONObject().put("schemaVersion", 1).put("projectUri", archive.toString())
+                .put("projectId", index.getString("id")).put("purpose", "finish")
+                .put("nextSha256", sha256(snapshot)).put("nextBytes", snapshot.length);
+        Files.write(new File(publication, "publication.json").toPath(), record.toString().getBytes(StandardCharsets.UTF_8));
+        try {
+            if (!committed) assertArchiveRejected(archive);
+            store.retryPending();
+            assertArrayEquals(external, bytes(archive));
+            assertFalse(new File(publication, "publication.json").exists());
+            assertEquals(working, store.currentProject());
+            assertEquals(index.toString(), store.readProject(working).toString());
+            assertEquals(working, store.finishWorkingProject(working));
+            assertEquals(1, exportedZipCount());
+            if (committed) {
+                assertEquals(index.getString("id"), store.readProject(archive).getString("id"));
+                Uri imported = store.importWorkingProject(archive, fixtureTree);
+                assertFalse(store.isArchive(imported));
+                assertEquals(index.getString("id"), store.readProject(imported).getString("id"));
+                assertEquals(1, exportedZipCount());
+                assertArrayEquals(external, bytes(archive));
+            } else {
+                File[] retained = retired.listFiles(file -> file.getName().startsWith(key + "-"));
+                assertNotNull(retained);
+                assertEquals(1, retained.length);
+                assertArrayEquals(snapshot, readFile(new File(retained[0], "next.zip")));
+            }
+        } finally {
+            File[] retained = retired.listFiles(file -> file.getName().startsWith(key + "-"));
+            if (retained != null) for (File owned : retained) deletePublicationTree(owned, owned);
+        }
+    }
+
+    @Test public void importingAPendingLegacyCaptureRecoversItIntoTheFolderWithoutRewritingItsSource() throws Exception {
+        Uri source = createProject("Pending archive capture");
+        byte[] sourceBefore = bytes(source);
+        byte[] recording = "Retained original from a prior ZIP save".getBytes(StandardCharsets.UTF_8);
+        File pending = fixtureFile("audio", recording);
+        String entryId = UUID.randomUUID().toString();
+        long started = Instant.parse("2026-11-05T15:00:00Z").toEpochMilli();
+        JSONObject metadata = fixtureMetadata();
+        TestDocumentsProvider.failNextZipWriteAfterTruncate();
+        assertThrows(IOException.class, () -> store.saveCapture(source, entryId, "audio", pending,
+                started, started + 4_000L, metadata, "complete"));
+        assertArrayEquals(recording, readFile(pending));
+        assertArrayEquals(sourceBefore, bytes(source));
+
+        Uri pickerAlias = DocumentsContract.buildDocumentUri(source.getAuthority(), DocumentsContract.getDocumentId(source));
+        assertNotEquals(source, pickerAlias);
+        Uri recovered = store.importWorkingProject(pickerAlias, fixtureTree);
+        assertFalse(store.isArchive(recovered));
+        JSONObject media = entryById(store.readProject(recovered), entryId).getJSONArray("media").getJSONObject(0);
+        assertArrayEquals(recording, bytes(store.mediaUri(recovered, media.getString("path"))));
+        store.retryPending();
+        assertFalse(pending.exists());
+        assertEquals(recovered, store.importWorkingProject(source, fixtureTree));
+        assertEquals(recovered, store.importWorkingProject(pickerAlias, fixtureTree));
+        assertEquals(1, entryById(store.readProject(recovered), entryId).getJSONArray("media").length());
+        assertArrayEquals(sourceBefore, bytes(source));
+        assertEquals(1, exportedZipCount());
+    }
+
+    @Test public void finishWaitsForAPendingCaptureRoutedFromTheLegacySource() throws Exception {
+        Uri source = createProject("Legacy capture awaiting retry");
+        byte[] sourceBefore = bytes(source);
+        byte[] original = encodedPhoto(0xff253d66);
+        File pending = fixtureFile("photo", original);
+        String entryId = UUID.randomUUID().toString();
+        long capturedAt = Instant.parse("2026-11-05T15:00:00Z").toEpochMilli();
+        TestDocumentsProvider.failZipReads(source, 1);
+        assertThrows(IOException.class, () -> store.saveCapture(source, entryId, "photo", pending,
+                capturedAt, capturedAt, fixtureMetadata(), "complete"));
+
+        Uri working = store.importWorkingProject(source, fixtureTree);
+        assertEquals(0, store.readProject(working).getJSONArray("entries").length());
+        IOException failure = assertThrows(IOException.class, () -> store.finishWorkingProject(working));
+        assertTrue(failure.getMessage().contains("pending saves"));
+        assertEquals(working, store.currentProject());
+        assertArrayEquals(original, readFile(pending));
+
+        store.retryPending();
+        assertFalse(pending.exists());
+        assertEquals(working, store.finishWorkingProject(working));
+        JSONObject media = entryById(store.readProject(working), entryId).getJSONArray("media").getJSONObject(0);
+        assertArrayEquals(original, bytes(store.mediaUri(working, media.getString("path"))));
+        assertArrayEquals(sourceBefore, bytes(source));
+        assertEquals(1, exportedZipCount());
+    }
+
+    @Test public void finishWaitsForAnOlderWatchReceiptRoutedToTheFolder() throws Exception {
+        Uri source = createProject("Earlier watch recording destination");
+        Uri working = store.importWorkingProject(source, fixtureTree);
+        assertEquals(source, store.beginWatchTransfer(source, false));
+        try {
+            IOException failure = assertThrows(IOException.class, () -> store.finishWorkingProject(working));
+            assertTrue(failure.getMessage().contains("watch recording"));
+            assertEquals(working, store.currentProject());
+        } finally { store.endWatchTransfer(); }
+
+        assertEquals(working, store.finishWorkingProject(working));
+        assertThrows(IOException.class, () -> store.beginWatchTransfer(source, false));
+        store.setCurrentProject(working);
+        try { assertEquals(source, store.beginWatchTransfer(source, false)); }
+        finally { store.endWatchTransfer(); }
+    }
+
+    @Test public void savedAudioAutomaticallyGetsItsOwnTranscriptInTheFinishedFolder() throws Exception {
         Uri working = store.createWorkingProject(fixtureTree, "Spoken project");
         String entryId = UUID.randomUUID().toString();
         byte[] spoken = readAll(InstrumentationRegistry.getInstrumentation().getContext().getAssets()
@@ -203,11 +331,11 @@ public final class ProjectStoreInstrumentedTest {
         assertEquals(0, exportedZipCount());
 
         Uri finished = store.finishWorkingProject(working);
-        ownedArchives.add(finished);
-        byte[] archive = bytes(finished);
-        JSONObject exportedAudio = entryById(archivedIndex(archive), entryId).getJSONArray("media").getJSONObject(0);
+        assertEquals(working, finished);
+        JSONObject exportedAudio = entryById(store.readProject(finished), entryId).getJSONArray("media").getJSONObject(0);
         assertEquals(transcript.getString("text"), exportedAudio.getJSONObject("transcript").getString("text"));
-        assertArrayEquals(spoken, archiveMembers(archive).get(original.getString("path")));
+        assertArrayEquals(spoken, bytes(store.mediaUri(finished, original.getString("path"))));
+        assertEquals(0, exportedZipCount());
     }
 
     @Test public void latestCreatedProjectPersistsIndependentlyOfSelectionOpeningAndImport() throws Exception {

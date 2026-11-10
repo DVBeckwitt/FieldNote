@@ -12,14 +12,14 @@ Android lab notebook for audio, photos, video, and text, organized by project.
 - **Capture from your home screen.** Tap the Recorder widget to start or stop audio in the currently selected Fieldnote project. Record now starts in the app; Floating mic keeps the full swipe control over your launcher. Those separate shortcuts use your latest-created project for new recordings.
 - **Record from your watch.** Fieldnote Voice sends audio over Bluetooth into your current phone project. Assign the Galaxy Watch double-press or Knock knock shortcut to start and stop. Recording continues in the background and with the display asleep.
 - **Keep related media together.** Attach photos, video, text, tags, and timestamped markers to an audio note. Search and filter your notes later.
-- **Transcribe recordings offline.** The phone automatically transcribes newly saved audio, including watch recordings, with a bundled English speech model. Read or search the transcript in its project.
+- **Transcribe recordings offline.** The phone automatically transcribes newly saved audio, including watch recordings. Use the bundled Small model or install and select another Vosk English model in **Settings → Transcription**. Read or search the transcript in its project.
 - **See when you're recording.** The blue microphone turns purple with a radiating glow during recording. Choose dark navy or light blue; dark mode is the default. On Record, shake once to start audio and again to stop.
 
-Use **New project** in the top bar to start an editable folder in your chosen storage location. When you are done, tap **Finish** to save a verified portable ZIP and close the project. Import a finished ZIP to add more notes or edit an existing entry. The exported ZIP contains the original files and their capture times, plus a JSON index with metadata, transcripts, and relationships.
+Use **New project** in the top bar to start an editable folder in your chosen storage location. **Finish** verifies and closes the project in that same folder. Reopen it from **Projects**, or copy the entire folder to keep its originals, metadata, transcripts, and relationships together. Older Fieldnote ZIPs can still be imported into folders.
 
 Works without an account, Google services, or root access. Android 8.0 or newer.
 
-[Download Fieldnote 1.1.0 beta](https://github.com/DVBeckwitt/FieldNote/releases/tag/v1.1.0-beta.1) for working folders and offline transcription. The [stable 1.0.0 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v1.0.0) provides Fieldnote and the Fieldnote Voice watch companion.
+[Download Fieldnote 1.1.0 beta 2](https://github.com/DVBeckwitt/FieldNote/releases/tag/v1.1.0-beta.2) for folder-based projects and selectable offline transcription models. The [stable 1.0.0 release](https://github.com/DVBeckwitt/FieldNote/releases/tag/v1.0.0) provides Fieldnote and the Fieldnote Voice watch companion.
 
 <img src="docs/screenshot.png" alt="Fieldnote in dark mode, showing the large recording control and latest audio/photo note" width="320">
 

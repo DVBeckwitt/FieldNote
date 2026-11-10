@@ -66,6 +66,36 @@ final class WorkingProjectFiles {
         return readSlots(store.children(store.directoryUri(directory))).latest().index;
     }
 
+    void verifyForClose(Uri directory, JSONObject expected) throws IOException, JSONException {
+        Uri project = store.directoryUri(directory);
+        Map<String, ProjectStore.Document> children = store.children(project);
+        IndexSlots slots = readSlots(children);
+        IndexCopy latest = slots.latest();
+        if (!latest.index.toString().equals(expected.toString())) {
+            throw new IOException("The project changed while finishing. Review the project and try again.");
+        }
+        Map<String, ProjectStore.Document> originals = store.children(mediaDirectory(directory));
+        JSONArray entries = latest.index.getJSONArray("entries");
+        for (int i = 0; i < entries.length(); i++) {
+            JSONArray media = entries.getJSONObject(i).getJSONArray("media");
+            for (int j = 0; j < media.length(); j++) {
+                JSONObject item = media.getJSONObject(j);
+                String filename = ProjectStore.mediaFilename(item.getString("path"));
+                ProjectStore.Document original = originals.get(filename);
+                ProjectStore.Digest fingerprint = fingerprint(item);
+                if (original == null || original.isDirectory()
+                        || !fingerprint.equals(ProjectStore.digest(store.openInput(original.uri), fingerprint.bytes))) {
+                    throw new IOException("The original media file is missing or changed: " + filename);
+                }
+            }
+        }
+        // The folder's main index must be current when opened outside Fieldnote.
+        if (slots.canonical != latest) {
+            Uri canonical = fileOrCreate(project, children, INDEX, "application/json");
+            writeVerifiedIndex(canonical, latest.bytes);
+        }
+    }
+
     void writeIndex(Uri directory, JSONObject next) throws IOException, JSONException {
         byte[] encoded = encode(next);
         Uri project = store.directoryUri(directory);

@@ -7,6 +7,7 @@ import android.app.job.JobService;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
@@ -35,6 +36,7 @@ public final class AudioTranscriptionJob extends JobService {
     static final String ACTION_TRANSCRIPT_UPDATED = "com.fieldnote.app.TRANSCRIPT_UPDATED";
     static final int JOB_ID = 0x464e5458;
     private static final String EXTRA_TOKEN = "token";
+    private static final String LOADING_LARGE_MODEL = "loading_large_model";
     private static final int MAX_RECORD_BYTES = 6 * OfflineTranscriber.MAX_TRANSCRIPT_CHARS + 16 * 1024;
     private static final long PREFERRED_START_WINDOW_MS = 5_000L;
     private static final Object QUEUE = new Object();
@@ -53,7 +55,8 @@ public final class AudioTranscriptionJob extends JobService {
     static void enqueue(Context context, Uri project, String projectId, String mediaId, String sha256)
             throws IOException {
         Context app = context.getApplicationContext();
-        Request request = new Request(project, projectId, mediaId, sha256.toLowerCase(Locale.ROOT));
+        Request request = new Request(project, projectId, mediaId, sha256.toLowerCase(Locale.ROOT),
+                SpeechModels.selected(app));
         File path = recordPath(app, request);
         boolean newlyQueued;
         synchronized (QUEUE) {
@@ -155,9 +158,14 @@ public final class AudioTranscriptionJob extends JobService {
     }
 
     private static boolean process(Context app) {
+        // Recover before reading any queue entry. A different request using the same model
+        // might otherwise reach native code before the request that killed the process.
+        try { recoverAbandonedModelLoad(app); }
+        catch (IOException unavailable) { return true; }
         ProjectStore store = new ProjectStore(app);
         File original = new File(app.getCacheDir(), "offline-transcription-input.m4a");
         OfflineTranscriber engine = null;
+        SpeechModel engineModel = null;
         boolean retry = false;
         try {
             for (File path : records(app)) {
@@ -167,22 +175,31 @@ public final class AudioTranscriptionJob extends JobService {
                     synchronized (QUEUE) { request = read(path); }
                     if (!path.equals(recordPath(app, request))) throw new IOException("Unexpected transcription record identity.");
                     if (request.result == null) {
-                        if (!store.copyTranscriptInput(request, original)) {
-                            remove(path);
-                            broadcast(app, request.project);
-                            continue;
-                        }
-                        try {
-                            checkInterrupted();
-                            if (engine == null) engine = new OfflineTranscriber(app);
-                            String text = engine.transcribe(original, request.resumeAtUs, request.priorText,
-                                    (nextTimeUs, recognized) -> checkpoint(path, request, nextTimeUs, recognized)).trim();
-                            request.result = result(text.isEmpty() ? "no_speech" : "complete", text);
-                        } catch (InterruptedIOException stopped) { return true; }
-                        catch (CheckpointWriteFailure failure) { throw failure; }
-                        catch (IOException | RuntimeException | LinkageError | OutOfMemoryError failed) {
+                        if (SpeechModels.isQuarantined(app, request.model)) {
                             request.result = result("failed", "");
-                        } finally { original.delete(); }
+                        } else {
+                            if (!store.copyTranscriptInput(request, original)) {
+                                remove(path);
+                                broadcast(app, request.project);
+                                continue;
+                            }
+                            try {
+                                checkInterrupted();
+                                if (engine == null || engineModel != request.model) {
+                                    closeEngine(engine);
+                                    engine = null;
+                                    engine = loadEngine(app, request.model);
+                                    engineModel = request.model;
+                                }
+                                String text = engine.transcribe(original, request.resumeAtUs, request.priorText,
+                                        (nextTimeUs, recognized) -> checkpoint(path, request, nextTimeUs, recognized)).trim();
+                                request.result = result(text.isEmpty() ? "no_speech" : "complete", text);
+                            } catch (InterruptedIOException stopped) { return true; }
+                            catch (CheckpointWriteFailure failure) { throw failure; }
+                            catch (IOException | RuntimeException | LinkageError | OutOfMemoryError failed) {
+                                request.result = result("failed", "");
+                            } finally { original.delete(); }
+                        }
                         checkInterrupted();
                         synchronized (QUEUE) { write(path, request); }
                     }
@@ -199,9 +216,55 @@ public final class AudioTranscriptionJob extends JobService {
             return retry;
         } finally {
             original.delete();
-            if (engine != null) {
-                try { engine.close(); }
-                catch (RuntimeException | LinkageError ignored) { /* The recorded result was already handled. */ }
+            closeEngine(engine);
+        }
+    }
+
+    private static void closeEngine(OfflineTranscriber engine) {
+        if (engine == null) return;
+        try { engine.close(); }
+        catch (RuntimeException | LinkageError ignored) { /* The recorded result was already handled. */ }
+    }
+
+    private static SharedPreferences modelLoadState(Context app) {
+        return app.getSharedPreferences("fieldnote-transcription", Context.MODE_PRIVATE);
+    }
+
+    private static void recoverAbandonedModelLoad(Context app) throws IOException {
+        SharedPreferences state = modelLoadState(app);
+        String loading = state.getString(LOADING_LARGE_MODEL, null);
+        if (loading == null) return;
+        SpeechModel model = SpeechModel.fromId(loading);
+        if (model != null && model.isLarge()) SpeechModels.quarantine(app, model);
+        if (!state.edit().remove(LOADING_LARGE_MODEL).commit()) {
+            throw new IOException("The interrupted speech model load could not be cleared.");
+        }
+    }
+
+    private static OfflineTranscriber loadEngine(Context app, SpeechModel model) throws IOException {
+        if (!model.isLarge()) return new OfflineTranscriber(app, model);
+        if (SpeechModels.isQuarantined(app, model)) {
+            throw new IOException("The previous load of this speech model was interrupted.");
+        }
+        SharedPreferences state = modelLoadState(app);
+        // Native allocation can kill the whole process without running Java catch blocks.
+        if (!state.edit().putString(LOADING_LARGE_MODEL, model.id).commit()) {
+            throw new CheckpointWriteFailure(new IOException("The speech model load could not be recorded."));
+        }
+        OfflineTranscriber loaded = null;
+        try {
+            loaded = new OfflineTranscriber(app, model);
+            return loaded;
+        } finally {
+            // Clear durably even when Android requested a cooperative job stop.
+            boolean interrupted = Thread.interrupted();
+            try {
+                if (!state.edit().remove(LOADING_LARGE_MODEL).commit()) {
+                    closeEngine(loaded);
+                    throw new CheckpointWriteFailure(new IOException("The speech model load could not be cleared."));
+                }
+            } finally {
+                if (interrupted) Thread.currentThread().interrupt();
             }
         }
     }
@@ -267,8 +330,12 @@ public final class AudioTranscriptionJob extends JobService {
             }
             byte[] bytes = new AtomicFile(path).readFully();
             JSONObject json = ProjectJson.parseObject(new String(bytes, StandardCharsets.UTF_8));
+            // Work queued before the picker used Small, including any saved prefix.
+            SpeechModel model = json.has("modelId")
+                    ? SpeechModel.fromId(json.getString("modelId")) : SpeechModel.SMALL;
+            if (model == null) throw new IOException("Transcription queue model is unknown.");
             Request request = new Request(Uri.parse(json.getString("projectUri")), json.getString("projectId"),
-                    json.getString("mediaId"), json.getString("sha256"));
+                    json.getString("mediaId"), json.getString("sha256"), model);
             if (json.has("result")) request.result = json.getJSONObject("result");
             else if (json.has("resumeAtUs") || json.has("priorText")) {
                 request.resumeAtUs = json.getLong("resumeAtUs");
@@ -287,7 +354,8 @@ public final class AudioTranscriptionJob extends JobService {
         byte[] encoded;
         try {
             JSONObject record = new JSONObject().put("projectUri", request.project.toString())
-                    .put("projectId", request.projectId).put("mediaId", request.mediaId).put("sha256", request.sha256);
+                    .put("projectId", request.projectId).put("mediaId", request.mediaId).put("sha256", request.sha256)
+                    .put("modelId", request.model.id);
             if (request.result != null) record.put("result", request.result);
             else if (request.resumeAtUs > 0) record.put("resumeAtUs", request.resumeAtUs).put("priorText", request.priorText);
             encoded = record.toString().getBytes(StandardCharsets.UTF_8);
@@ -316,15 +384,17 @@ public final class AudioTranscriptionJob extends JobService {
     static final class Request {
         final Uri project;
         final String projectId, mediaId, sha256;
+        private final SpeechModel model;
         private JSONObject result;
         private long resumeAtUs;
         private String priorText = "";
 
-        private Request(Uri project, String projectId, String mediaId, String sha256) {
+        private Request(Uri project, String projectId, String mediaId, String sha256, SpeechModel model) {
             this.project = project;
             this.projectId = projectId;
             this.mediaId = mediaId;
             this.sha256 = sha256;
+            this.model = model;
         }
 
         private boolean sameIdentity(Request other) {

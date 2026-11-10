@@ -1,5 +1,6 @@
 package com.fieldnote.app;
 
+import android.app.ActivityManager;
 import android.content.Context;
 import android.media.AudioFormat;
 import android.media.MediaCodec;
@@ -16,20 +17,12 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InterruptedIOException;
-import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.ShortBuffer;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
-/** Decodes saved audio into short PCM blocks for the bundled English speech model. */
+/** Decodes saved audio into short PCM blocks for an installed speech model. */
 final class OfflineTranscriber implements AutoCloseable {
-    private static final String MODEL_ASSET = "offline-speech-model.zip";
-    private static final String MODEL_DIRECTORY = "vosk-model-small-en-us-0.15";
     private static final long BUFFER_WAIT_US = 10_000L;
     private static final long DECODER_STALL_MS = 30_000L;
     private static final long MAX_CHECKPOINT_WALL_MS = 90_000L;
@@ -41,19 +34,44 @@ final class OfflineTranscriber implements AutoCloseable {
     private final long forceCheckpointAfterUs;
 
     OfflineTranscriber(Context context) throws IOException {
-        this(context, 60_000_000L, 180_000_000L);
+        this(context, SpeechModel.SMALL);
+    }
+
+    OfflineTranscriber(Context context, SpeechModel speechModel) throws IOException {
+        this(context, speechModel, 60_000_000L, 180_000_000L);
     }
 
     OfflineTranscriber(Context context, long checkpointAfterUs, long forceCheckpointAfterUs) throws IOException {
+        this(context, SpeechModel.SMALL, checkpointAfterUs, forceCheckpointAfterUs);
+    }
+
+    private OfflineTranscriber(Context context, SpeechModel speechModel,
+                               long checkpointAfterUs, long forceCheckpointAfterUs) throws IOException {
         this.checkpointAfterUs = checkpointAfterUs;
         this.forceCheckpointAfterUs = forceCheckpointAfterUs;
         checkInterrupted();
-        File directory = installModel(context);
+        File directory = SpeechModels.directory(context, speechModel);
+        if (speechModel.isLarge()) checkLargeModelMemory(context, speechModel);
         checkInterrupted();
         try {
             model = new Model(directory.getAbsolutePath());
         } catch (LinkageError error) {
             throw new IOException("The offline speech engine could not load.", error);
+        }
+    }
+
+    private static void checkLargeModelMemory(Context context, SpeechModel model) throws IOException {
+        if (!SpeechModels.isSupported(context, model)) {
+            throw new IOException("The selected speech model needs a 64-bit device with more memory.");
+        }
+        ActivityManager manager = context.getSystemService(ActivityManager.class);
+        if (manager == null) throw new IOException("Available memory could not be checked.");
+        ActivityManager.MemoryInfo memory = new ActivityManager.MemoryInfo();
+        manager.getMemoryInfo(memory);
+        // The unpacked model size gives a conservative headroom estimate for native
+        // graphs and rescoring data. Leave Android's low-memory reserve untouched.
+        if (memory.lowMemory || memory.availMem - memory.threshold < model.installedBytes) {
+            throw new IOException("There is not enough available memory to load the selected speech model.");
         }
     }
 
@@ -265,35 +283,6 @@ final class OfflineTranscriber implements AutoCloseable {
         @Override public void close() {
             if (recognizer != null) recognizer.close();
         }
-    }
-
-    private static synchronized File installModel(Context context) throws IOException {
-        Path root = context.getNoBackupFilesDir().toPath();
-        Path installed = root.resolve(MODEL_DIRECTORY);
-        if (Files.isDirectory(installed)) return installed.toFile();
-
-        // A process interrupted during installation can safely overwrite the staged files.
-        Path staging = root.resolve(MODEL_DIRECTORY + ".pending");
-        String prefix = MODEL_DIRECTORY + "/";
-        byte[] buffer = new byte[32 * 1024];
-        try (ZipInputStream zip = new ZipInputStream(context.getAssets().open(MODEL_ASSET))) {
-            for (ZipEntry entry; (entry = zip.getNextEntry()) != null; ) {
-                checkInterrupted();
-                if (!entry.getName().startsWith(prefix)) throw new IOException("Invalid speech model entry.");
-                Path file = staging.resolve(entry.getName().substring(prefix.length())).normalize();
-                if (!file.startsWith(staging)) throw new IOException("Invalid speech model path.");
-                if (entry.isDirectory()) continue;
-                Files.createDirectories(file.getParent());
-                try (OutputStream output = Files.newOutputStream(file)) {
-                    for (int count; (count = zip.read(buffer)) != -1; ) {
-                        checkInterrupted();
-                        output.write(buffer, 0, count);
-                    }
-                }
-            }
-        }
-        Files.move(staging, installed, StandardCopyOption.ATOMIC_MOVE);
-        return installed.toFile();
     }
 
     private static void checkInterrupted() throws InterruptedIOException {
